@@ -11,8 +11,7 @@ rs/
 ├── reference/              (existing — spec)
 ├── docs/                   (existing — documentation)
 ├── crates/
-│   ├── rs-core/            types shared across all crates
-│   ├── rs-particle/        Hemera hash + Particle type
+│   ├── rs-core/            types shared across all crates (depends on cyber-hemera)
 │   ├── rs-fixed-point/     FixedPoint<T, DECIMALS>
 │   ├── rs-bounded/         BoundedVec, BoundedMap, ArrayString
 │   ├── rs-arena/           Arena<T, N>
@@ -33,13 +32,12 @@ rs/
 
 ```
 rs (facade)
-├── rs-core
-├── rs-particle       ← rs-core
+├── rs-core           ← cyber-hemera (external dep)
 ├── rs-fixed-point    ← rs-core
 ├── rs-bounded        ← rs-core
 ├── rs-arena          ← rs-core
 ├── rs-channel        ← rs-core, rs-bounded
-├── rs-addressed      ← rs-core, rs-particle (proc-macro)
+├── rs-addressed      ← rs-core (proc-macro, uses cyber-hemera via rs-core)
 ├── rs-epoch          ← rs-core (proc-macro)
 ├── rs-deterministic  ← rs-core (proc-macro)
 ├── rs-registers      ← rs-core (proc-macro)
@@ -61,6 +59,7 @@ src/lib.rs
   - type Address = [u8; 32]
   - trait EpochReset { fn reset(&mut self); }
   - trait CanonicalSerialize { fn serialize_canonical(&self, buf: &mut Vec<u8>); }
+  - type Particle = hemera::Hash        // re-export from cyber-hemera
   - trait Cell { const NAME, VERSION, BUDGET, HEARTBEAT; fn current_epoch(); fn health_check(); fn reset_epoch_state(); }
   - trait MigrateFrom<T> { fn migrate(old: T) -> Self; }
   - struct FunctionSignature { name, args, ret, deadline }
@@ -72,26 +71,7 @@ No dependencies beyond `core`/`no_std`.
 
 **Estimate:** 1 pomodoro.
 
-#### 0.2 — rs-particle (~800 lines)
-
-Hemera (Poseidon2 sponge over Goldilocks) + Particle type.
-
-```
-src/
-  goldilocks.rs  — F_p arithmetic (p = 2^64 - 2^32 + 1), ~200 lines
-  poseidon2.rs   — Poseidon2 permutation (width 16, 8+64 rounds, S-box x^7), ~300 lines
-  hemera.rs      — sponge construction (rate 8, capacity 8, absorb/squeeze), ~150 lines
-  particle.rs    — Particle type (64 bytes = 8 field elements, Copy, Eq, Hash, Ord), ~100 lines
-  lib.rs         — re-exports, ~50 lines
-```
-
-Dependencies: `rs-core`.
-
-Critical correctness requirement: must have test vectors. Generate from a reference implementation or compute by hand for small inputs.
-
-**Estimate:** 2 sessions (12 pomodoros). Poseidon2 is the hardest part — round constants, MDS matrix, S-box must be exact.
-
-#### 0.3 — rs-fixed-point (~800 lines)
+#### 0.2 — rs-fixed-point (~800 lines)
 
 Deterministic fixed-point arithmetic.
 
@@ -114,7 +94,7 @@ Key: `checked_mul` for FixedPoint requires widening multiplication (u128 * u128 
 
 **Estimate:** 1 session (6 pomodoros).
 
-#### 0.4 — rs-bounded (~600 lines)
+#### 0.3 — rs-bounded (~600 lines)
 
 Bounded collections for no-heap environments.
 
@@ -136,7 +116,7 @@ Dependencies: `rs-core`.
 
 **Estimate:** 1 session.
 
-#### 0.5 — rs-arena (~400 lines)
+#### 0.4 — rs-arena (~400 lines)
 
 Typed arena with compile-time capacity.
 
@@ -155,7 +135,7 @@ Dependencies: `rs-core`.
 
 **Estimate:** 1 session.
 
-#### 0.6 — rs-channel (~500 lines)
+#### 0.5 — rs-channel (~500 lines)
 
 Wait-free bounded MPMC channel.
 
@@ -195,7 +175,7 @@ src/lib.rs (proc-macro = true)
     - Reject types without CanonicalSerialize
 ```
 
-Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-particle`, `rs-core`.
+Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-core` (which re-exports `cyber-hemera`).
 
 **Estimate:** 1 session.
 
@@ -306,7 +286,6 @@ Dependencies: `syn`, `quote`, `proc-macro2`. Runtime deps: `rs-core`, `rs-epoch`
 ```
 src/lib.rs
   pub use rs_core::*;
-  pub use rs_particle as particle;
   pub use rs_fixed_point as fixed_point;
   pub use rs_bounded as bounded;
   pub use rs_arena as arena;
@@ -314,7 +293,7 @@ src/lib.rs
 
   pub mod prelude {
       pub use rs_core::{Address, EpochReset, CanonicalSerialize, Cell, ...};
-      pub use rs_particle::Particle;
+      pub use rs_core::Particle;
       pub use rs_fixed_point::FixedPoint;
       pub use rs_bounded::{BoundedVec, BoundedMap, ArrayString};
       pub use rs_arena::Arena;
@@ -333,7 +312,7 @@ src/lib.rs
 #### 3.1 — Unit tests (in each crate)
 
 Each crate has `#[cfg(test)] mod tests` with:
-- Property tests for arithmetic (fixed_point, goldilocks)
+- Property tests for arithmetic (fixed_point)
 - Edge cases: 0, 1, MAX, overflow
 - Serialization round-trip tests (addressed)
 - Bitfield pack/unpack round-trips (registers)
@@ -351,15 +330,6 @@ tests/
   bounded_async.rs      — timeout wrapper works
 ```
 
-#### 3.3 — Test vectors for Hemera
-
-Generate or hand-compute test vectors:
-- Empty input
-- Single byte
-- 64 bytes (one rate block)
-- 65 bytes (crosses rate boundary)
-- Known Poseidon2 test vectors from reference implementations
-
 **Estimate for all tests:** 2 sessions.
 
 ---
@@ -368,8 +338,7 @@ Generate or hand-compute test vectors:
 
 | Component | Lines | Sessions | Layer |
 |-----------|------:|:--------:|:-----:|
-| rs-core | 100 | 0.5 | 0 |
-| rs-particle (Hemera) | 800 | 2 | 0 |
+| rs-core (+Particle via cyber-hemera) | 150 | 0.5 | 0 |
 | rs-fixed-point | 800 | 1 | 0 |
 | rs-bounded | 600 | 1 | 0 |
 | rs-arena | 400 | 1 | 0 |
@@ -381,11 +350,13 @@ Generate or hand-compute test vectors:
 | rs-cell | 2000 | 3 | 1 |
 | rs (facade) | 100 | 0.5 | 2 |
 | tests | 500 | 2 | 3 |
-| **Total** | **~7,800** | **~18** | |
+| **Total** | **~7,050** | **~16** | |
 
-18 sessions = ~54 focused hours. With parallel work on Layer 0 crates, effective time compresses.
+16 sessions = ~48 focused hours. With parallel work on Layer 0 crates, effective time compresses.
 
-**Parallelization:** Layer 0 crates (0.1–0.6) have no dependencies on each other. All six can be developed in parallel by separate agents, partitioned by crate directory. Layer 1 macros depend on Layer 0 but are independent of each other except rs-cell depends on rs-epoch. Layer 2 and 3 are sequential.
+**External dependency:** `cyber-hemera` v0.2.0 (crates.io) provides Hemera hash (Poseidon2/Goldilocks sponge). `Particle` is a type alias for `hemera::Hash` (64 bytes). No need to reimplement.
+
+**Parallelization:** Layer 0 crates (0.1–0.5) have no dependencies on each other. All five can be developed in parallel by separate agents, partitioned by crate directory. Layer 1 macros depend on Layer 0 but are independent of each other except rs-cell depends on rs-epoch. Layer 2 and 3 are sequential.
 
 ---
 
@@ -393,19 +364,18 @@ Generate or hand-compute test vectors:
 
 If working sequentially, priority order:
 
-1. **rs-core** — everything depends on it
-2. **rs-particle** — Hemera is the cryptographic foundation, hardest to get right
-3. **rs-bounded** — used everywhere (cell state, channels)
-4. **rs-fixed-point** — used in deterministic functions
-5. **rs-arena** — standalone, simple
-6. **rs-channel** — standalone
-7. **rs-addressed** — first macro, uses rs-particle
-8. **rs-epoch** — simple macro, needed by rs-cell
-9. **rs-registers** — complex macro, independent
-10. **rs-deterministic** — simple macro, partial enforcement
-11. **rs-cell** — largest macro, uses everything
-12. **rs (facade)** — trivial, last
-13. **tests** — integration tests after all crates exist
+1. **rs-core** — everything depends on it (includes Particle via cyber-hemera)
+2. **rs-bounded** — used everywhere (cell state, channels)
+3. **rs-fixed-point** — used in deterministic functions
+4. **rs-arena** — standalone, simple
+5. **rs-channel** — standalone
+6. **rs-addressed** — first macro, uses cyber-hemera via rs-core
+7. **rs-epoch** — simple macro, needed by rs-cell
+8. **rs-registers** — complex macro, independent
+9. **rs-deterministic** — simple macro, partial enforcement
+10. **rs-cell** — largest macro, uses everything
+11. **rs (facade)** — trivial, last
+12. **tests** — integration tests after all crates exist
 
 ---
 

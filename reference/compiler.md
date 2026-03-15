@@ -72,7 +72,7 @@ tags: cyber, rs, reference
 │  │  - rs::fixed_point           800L    │    │
 │  │  - rs::bounded               600L    │    │
 │  │  - rs::channel               500L    │    │
-│  │  - rs::particle (Hemera)          800L    │    │
+│  │  - rs::particle (cyber-hemera)  ext  │    │
 │  │  - rs::arena                 400L    │    │
 │  └──────────────────────────────────────┘    │
 │                                              │
@@ -100,12 +100,12 @@ tags: cyber, rs, reference
 | `rs::fixed_point` | library crate | 800 | Standard Rust |
 | `rs::bounded` | library crate | 600 | Standard Rust |
 | `rs::channel` | library crate | 500 | Standard Rust |
-| `rs::particle` (Hemera) | library crate | 800 | Standard Rust |
+| `rs::particle` | external dep (`cyber-hemera`) | — | Standard Rust |
 | `rs::arena` | library crate | 400 | Standard Rust |
-| **Library subtotal** | | **3,100** | |
-| **Total** | | **~8,400** | |
+| **Library subtotal** | | **2,300** | |
+| **Total** | | **~7,600** | |
 
-The actual rustc patch is ~2,500 lines. Everything else is standard Rust crates that work with both `rsc` and `rustc`.
+The actual rustc patch is ~2,500 lines. Everything else is standard Rust crates that work with both `rsc` and `rustc`. Hemera (Poseidon2/Goldilocks hash) is an external dependency (`cyber-hemera` on crates.io), not reimplemented.
 
 ## Build Pipeline
 

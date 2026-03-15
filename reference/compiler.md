@@ -61,19 +61,21 @@ tags: cyber, rs, reference
 │  └──────────────────────────────────────┘    │
 │                                              │
 │  ┌──────────────────────────────────────┐    │
-│  │  Rs Proc-Macros (standard crates)    │    │
+│  │  rs-macros (single proc-macro crate) │    │
 │  │  - #[derive(Addressed)]        500L  │    │
-│  │  - cell! { } macro          2000L    │    │
-│  │  - #[epoch] handling         300L    │    │
+│  │  - #[epoch]                    300L  │    │
+│  │  - #[deterministic]            400L  │    │
+│  │  - #[register]                 800L  │    │
+│  │  - cell! { }                  2000L  │    │
 │  └──────────────────────────────────────┘    │
 │                                              │
 │  ┌──────────────────────────────────────┐    │
-│  │  Rs Standard Library                  │    │
-│  │  - rs::fixed_point           800L    │    │
-│  │  - rs::bounded               600L    │    │
-│  │  - rs::channel               500L    │    │
-│  │  - rs::particle (cyber-hemera)  ext  │    │
-│  │  - rs::arena                 400L    │    │
+│  │  rs (single library crate)            │    │
+│  │  - core (+ cyber-hemera)        150L │    │
+│  │  - fixed_point                  800L │    │
+│  │  - bounded                      600L │    │
+│  │  - channel                      500L │    │
+│  │  - arena                        400L │    │
 │  └──────────────────────────────────────┘    │
 │                                              │
 └──────────────────────────────────────────────┘
@@ -93,19 +95,13 @@ tags: cyber, rs, reference
 | Bounded async enforcement lint | rustc fork | 200 | Compiler patch |
 | Rs diagnostics and error messages | rustc fork | 300 | Compiler patch |
 | **Compiler patch subtotal** | | **2,500** | |
-| `#[derive(Addressed)]` | proc-macro crate | 500 | Standard Rust |
-| `cell!` macro | proc-macro crate | 2,000 | Standard Rust |
-| `#[epoch]` attribute | proc-macro crate | 300 | Standard Rust |
-| **Proc-macro subtotal** | | **2,800** | |
-| `rs::fixed_point` | library crate | 800 | Standard Rust |
-| `rs::bounded` | library crate | 600 | Standard Rust |
-| `rs::channel` | library crate | 500 | Standard Rust |
-| `rs::particle` | external dep (`cyber-hemera`) | — | Standard Rust |
-| `rs::arena` | library crate | 400 | Standard Rust |
-| **Library subtotal** | | **2,300** | |
-| **Total** | | **~7,600** | |
+| `rs-macros` (all proc-macros) | single proc-macro crate | 4,000 | Standard Rust |
+| `rs` (all library code) | single library crate | 2,550 | Standard Rust |
+| `cyber-hemera` (Particle/Hemera) | external dep (crates.io) | — | Standard Rust |
+| **Crate subtotal** | | **6,550** | |
+| **Total** | | **~9,050** | |
 
-The actual rustc patch is ~2,500 lines. Everything else is standard Rust crates that work with both `rsc` and `rustc`. Hemera (Poseidon2/Goldilocks hash) is an external dependency (`cyber-hemera` on crates.io), not reimplemented.
+The actual rustc patch is ~2,500 lines. Two standard Rust crates (`rs` + `rs-macros`) provide the Phase 1 implementation. Hemera (Poseidon2/Goldilocks hash) is an external dependency (`cyber-hemera` on crates.io).
 
 ## Build Pipeline
 

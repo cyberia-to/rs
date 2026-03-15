@@ -11,17 +11,9 @@ rs/
 ├── reference/              (existing — spec)
 ├── docs/                   (existing — documentation)
 ├── crates/
-│   ├── rs-core/            types shared across all crates (depends on cyber-hemera)
-│   ├── rs-fixed-point/     FixedPoint<T, DECIMALS>
-│   ├── rs-bounded/         BoundedVec, BoundedMap, ArrayString
-│   ├── rs-arena/           Arena<T, N>
-│   ├── rs-channel/         bounded MPMC channel
-│   ├── rs-addressed/       #[derive(Addressed)] proc-macro
-│   ├── rs-epoch/           #[epoch] attribute macro
-│   ├── rs-deterministic/   #[deterministic] proc-macro (partial)
-│   ├── rs-registers/       #[register] proc-macro
-│   ├── rs-cell/            cell! {} proc-macro
-│   └── rs/                 facade crate (rs::prelude::*)
+│   ├── rs/                 library: types, bounded, arena, channel, fixed_point
+│   └── rs-macros/          proc-macro: addressed, epoch, deterministic,
+│                           registers, cell (all macros in one crate)
 ├── tests/                  integration tests
 ├── Cargo.toml              workspace manifest
 ├── CLAUDE.md
@@ -31,35 +23,44 @@ rs/
 ### Dependency Graph
 
 ```
-rs (facade)
-├── rs-core           ← cyber-hemera (external dep)
-├── rs-fixed-point    ← rs-core
-├── rs-bounded        ← rs-core
-├── rs-arena          ← rs-core
-├── rs-channel        ← rs-core, rs-bounded
-├── rs-addressed      ← rs-core (proc-macro, uses cyber-hemera via rs-core)
-├── rs-epoch          ← rs-core (proc-macro)
-├── rs-deterministic  ← rs-core (proc-macro)
-├── rs-registers      ← rs-core (proc-macro)
-└── rs-cell           ← rs-core, rs-epoch, rs-bounded (proc-macro)
+rs (library crate)
+├── cyber-hemera            (external dep — Hemera hash)
+└── (no other external deps)
+
+rs-macros (proc-macro crate)
+├── syn, quote, proc-macro2 (build deps)
+└── rs                      (runtime dep — types used in generated code)
 ```
+
+Two crates. `rs` is the library (types + data structures). `rs-macros` is the single proc-macro crate (all 5 macros). User depends on `rs` which re-exports macros from `rs-macros`.
 
 ---
 
 ## Phase 1: Library Implementation
 
-### Layer 0: Foundation (no dependencies between these)
+### rs (library crate, ~2550 lines)
 
-#### 0.1 — rs-core (~100 lines)
-
-Shared types and traits used across all crates.
+All library code lives in one crate, organized as modules.
 
 ```
-src/lib.rs
+crates/rs/src/
+  lib.rs          — re-exports, prelude (~100 lines)
+  core.rs         — Address, Particle, Timeout, traits (~150 lines)
+  fixed_point.rs  — FixedPoint<T, DECIMALS> (~400 lines)
+  fixed_point/
+    ops.rs        — checked/saturating/wrapping ops (~400 lines)
+  bounded.rs      — BoundedVec, BoundedMap, ArrayString (~600 lines)
+  arena.rs        — Arena<T, N> (~400 lines)
+  channel.rs      — bounded MPMC channel (~500 lines)
+```
+
+#### core module (~150 lines)
+
+```
   - type Address = [u8; 32]
+  - type Particle = hemera::Hash        // re-export from cyber-hemera
   - trait EpochReset { fn reset(&mut self); }
   - trait CanonicalSerialize { fn serialize_canonical(&self, buf: &mut Vec<u8>); }
-  - type Particle = hemera::Hash        // re-export from cyber-hemera
   - trait Cell { const NAME, VERSION, BUDGET, HEARTBEAT; fn current_epoch(); fn health_check(); fn reset_epoch_state(); }
   - trait MigrateFrom<T> { fn migrate(old: T) -> Self; }
   - struct FunctionSignature { name, args, ret, deadline }
@@ -67,17 +68,11 @@ src/lib.rs
   - struct Timeout                      // returned when bounded async exceeds deadline
 ```
 
-No dependencies beyond `core`/`no_std`.
+External dependency: `cyber-hemera` (crates.io). Otherwise `core`/`no_std` only.
 
-**Estimate:** 1 pomodoro.
-
-#### 0.2 — rs-fixed-point (~800 lines)
-
-Deterministic fixed-point arithmetic.
+#### fixed_point module (~800 lines)
 
 ```
-src/
-  lib.rs
   - struct FixedPoint<T, const DECIMALS: u32> { raw: T }
   - from_integer, from_raw, from_decimal
   - checked_add, checked_sub, checked_mul, checked_div
@@ -88,22 +83,14 @@ src/
   - Instantiations for T = u64, u128
 ```
 
-Dependencies: `rs-core`.
-
 Key: `checked_mul` for FixedPoint requires widening multiplication (u128 * u128 needs u256 or split multiplication). This is the tricky part.
 
-**Estimate:** 1 session (6 pomodoros).
-
-#### 0.3 — rs-bounded (~600 lines)
-
-Bounded collections for no-heap environments.
+#### bounded module (~600 lines)
 
 ```
-src/
   bounded_vec.rs  — BoundedVec<T, const N: usize>, ~200 lines
-  bounded_map.rs  — BoundedMap<K, V, const N: usize> (backed by sorted array or BTreeMap), ~250 lines
+  bounded_map.rs  — BoundedMap<K, V, const N: usize> (backed by sorted array), ~250 lines
   array_string.rs — ArrayString<const N: usize>, ~100 lines
-  lib.rs          — re-exports, ~50 lines
 ```
 
 `BoundedVec`: stack-allocated array + length counter. `try_push`, `try_insert`, `pop`, `iter`, `len`, `clear`.
@@ -112,16 +99,9 @@ src/
 
 `ArrayString`: `BoundedVec<u8, N>` with UTF-8 invariant.
 
-Dependencies: `rs-core`.
-
-**Estimate:** 1 session.
-
-#### 0.4 — rs-arena (~400 lines)
-
-Typed arena with compile-time capacity.
+#### arena module (~400 lines)
 
 ```
-src/lib.rs
   - struct Arena<T, const N: usize> { storage: [MaybeUninit<T>; N], count: usize }
   - alloc(&self, value: T) -> Option<&mut T>  (uses UnsafeCell internally)
   - count(), iter(), iter_mut()
@@ -131,16 +111,9 @@ src/lib.rs
 
 One tricky part: `alloc` takes `&self` but returns `&mut T`. This requires interior mutability (`UnsafeCell` + atomic counter). Well-studied pattern.
 
-Dependencies: `rs-core`.
-
-**Estimate:** 1 session.
-
-#### 0.5 — rs-channel (~500 lines)
-
-Wait-free bounded MPMC channel.
+#### channel module (~500 lines)
 
 ```
-src/lib.rs
   - fn bounded_channel<T>(cap: usize) -> (Sender<T>, Receiver<T>)
   - Sender::try_send(T) -> Result<(), Full<T>>
   - Receiver::try_recv() -> Option<T>
@@ -148,26 +121,39 @@ src/lib.rs
   - Based on ring buffer with atomic head/tail
 ```
 
-Dependencies: `rs-core`, `rs-bounded` (for internal buffer).
+**Estimate for rs crate:** 4 sessions.
 
-**Estimate:** 1 session.
+---
 
-### Layer 1: Proc-Macros (depend on Layer 0)
+### rs-macros (proc-macro crate, ~4000 lines)
 
-#### 1.1 — rs-addressed (~500 lines)
-
-Proc-macro crate: `#[derive(Addressed)]`.
+All proc-macros in one crate. Mirrors serde's pattern (serde + serde_derive).
 
 ```
-src/lib.rs (proc-macro = true)
+crates/rs-macros/src/
+  lib.rs          — proc-macro entry points (~50 lines)
+  addressed.rs    — #[derive(Addressed)] (~500 lines)
+  epoch.rs        — #[epoch] attribute (~300 lines)
+  deterministic.rs — #[deterministic] attribute (~400 lines)
+  registers.rs    — #[register] attribute on modules (~800 lines)
+  cell.rs         — cell! {} macro (~2000 lines)
+```
+
+Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs`.
+
+#### addressed (~500 lines)
+
+```
   - Parse struct fields
   - Generate CanonicalSerialize impl:
     - Each field serialized in declaration order
     - Integers: LE fixed-width
+    - bool: u8 (0/1)
+    - Option<T>: u8 tag + data if Some
     - Variable-length: u32 length prefix + data
     - Nested Addressed: serialize as Particle (64 bytes)
     - Enums: u32 discriminant + variant data
-  - Generate fn particle(&self) -> Particle { Hemera::hash(self.serialize_canonical()) }
+  - Generate fn particle(&self) -> Particle { hemera::hash(self.serialize_canonical()) }
   - Compile-time checks:
     - Reject f32/f64 fields
     - Reject raw pointer fields
@@ -175,36 +161,23 @@ src/lib.rs (proc-macro = true)
     - Reject types without CanonicalSerialize
 ```
 
-Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-core` (which re-exports `cyber-hemera`).
-
-**Estimate:** 1 session.
-
-#### 1.2 — rs-epoch (~300 lines)
-
-Attribute proc-macro: `#[epoch]`.
+#### epoch (~300 lines)
 
 ```
-src/lib.rs (proc-macro = true)
   - On statics: wraps the static in a newtype that tracks epoch
-  - Generates EpochReset impl for the inner type
-  - Generates __epoch_reset() function that resets all #[epoch] statics in the module
-  - For known types:
+  - On structs: generates EpochReset impl that resets all fields
+  - Generates __epoch_reset() function that resets all #[epoch] items in the module
+  - Reset rules by type:
     - AtomicU32/U64: store(0)
-    - BoundedVec: clear()
+    - BoundedVec/BoundedMap: clear()
     - Option: None
+    - bool: false, integers: 0
     - Custom types: require EpochReset impl
 ```
 
-Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-core`.
-
-**Estimate:** 1 session.
-
-#### 1.3 — rs-deterministic (~400 lines)
-
-Proc-macro that checks function body for non-deterministic constructs (partial — full enforcement requires compiler).
+#### deterministic (~400 lines)
 
 ```
-src/lib.rs (proc-macro = true)
   - Parse function AST
   - Walk the token tree / syn AST looking for:
     - f32/f64 type annotations → error
@@ -213,25 +186,20 @@ src/lib.rs (proc-macro = true)
     - std::time::Instant → error
     - unsafe blocks → error (conservative)
     - inline asm → error
-  - Cannot check:
-    - Transitivity (calling non-deterministic functions) — needs type system
-    - Unchecked arithmetic operators — looks like normal operators in AST
-  - These unchecked items become compiler-enforced in Phase 2
+  - Cannot check (Phase 2 compiler-enforced):
+    - Transitivity (calling non-deterministic functions)
+    - Unchecked arithmetic operators
 ```
 
-**Estimate:** 1 session.
-
-#### 1.4 — rs-registers (~800 lines)
-
-Proc-macro: `#[register]` attribute on modules.
+#### registers (~800 lines)
 
 ```
-src/lib.rs (proc-macro = true)
   - Parse module with register/reg/field attributes
   - Validate:
     - Field bit ranges don't overlap
     - Fields fit within register width
     - Enum variants fit within field width
+    - Enum covers all bit patterns for field width
     - Offset within bank_size
   - Generate:
     - read() for ro/rw registers
@@ -242,27 +210,22 @@ src/lib.rs (proc-macro = true)
   - All generated code uses unsafe internally but exposes safe API
 ```
 
-Dependencies: `syn`, `quote`, `proc-macro2`.
-
-**Estimate:** 2 sessions. This is one of the more complex macros — bitfield codegen, validation, multiple access modes.
-
-#### 1.5 — rs-cell (~2000 lines)
-
-Proc-macro: `cell! {}` declarative macro.
+#### cell (~2000 lines)
 
 ```
-src/lib.rs (proc-macro = true)
   - Parse cell declaration syntax:
     - name, version, budget, heartbeat
     - state { } block → generate XxxState struct
     - epoch_state { } block → generate XxxEpochState struct with #[epoch]
+    - input/output channel declarations
     - pub fn / fn methods → generate impl block
     - async(dur) fn → wrap with timeout (library-level)
     - migrate from vN { } → generate MigrateFrom impl
   - Generate:
     - State struct + EpochState struct
     - Cell wrapper struct
-    - Cell trait impl
+    - Cell trait impl (including current_epoch)
+    - Error enum (collected from Error::Variant usage) with From<rs::Timeout>
     - MigrateFrom impl
     - CellMetadata impl (interface introspection)
     - __epoch_reset glue
@@ -275,43 +238,15 @@ src/lib.rs (proc-macro = true)
 
 This is the largest and most complex piece. The macro is essentially a DSL parser + code generator.
 
-Dependencies: `syn`, `quote`, `proc-macro2`. Runtime deps: `rs-core`, `rs-epoch`, `rs-bounded`.
+**Estimate for rs-macros crate:** 8 sessions.
 
-**Estimate:** 3 sessions.
+---
 
-### Layer 2: Facade
+### Tests
 
-#### 2.1 — rs (facade crate, ~100 lines)
+#### Unit tests (in each module)
 
-```
-src/lib.rs
-  pub use rs_core::*;
-  pub use rs_fixed_point as fixed_point;
-  pub use rs_bounded as bounded;
-  pub use rs_arena as arena;
-  pub use rs_channel as channel;
-
-  pub mod prelude {
-      pub use rs_core::{Address, EpochReset, CanonicalSerialize, Cell, ...};
-      pub use rs_core::Particle;
-      pub use rs_fixed_point::FixedPoint;
-      pub use rs_bounded::{BoundedVec, BoundedMap, ArrayString};
-      pub use rs_arena::Arena;
-      pub use rs_addressed::Addressed;
-      pub use rs_epoch::epoch;
-      pub use rs_deterministic::deterministic;
-      pub use rs_registers::register;
-      pub use rs_cell::cell;
-  }
-```
-
-**Estimate:** 1 pomodoro.
-
-### Layer 3: Tests
-
-#### 3.1 — Unit tests (in each crate)
-
-Each crate has `#[cfg(test)] mod tests` with:
+Each module has `#[cfg(test)] mod tests` with:
 - Property tests for arithmetic (fixed_point)
 - Edge cases: 0, 1, MAX, overflow
 - Serialization round-trip tests (addressed)
@@ -319,7 +254,7 @@ Each crate has `#[cfg(test)] mod tests` with:
 - Channel concurrency tests
 - Arena fill-and-drop tests
 
-#### 3.2 — Integration tests (~500 lines)
+#### Integration tests (~500 lines)
 
 ```
 tests/
@@ -336,46 +271,34 @@ tests/
 
 ## Phase 1 Summary
 
-| Component | Lines | Sessions | Layer |
-|-----------|------:|:--------:|:-----:|
-| rs-core (+Particle via cyber-hemera) | 150 | 0.5 | 0 |
-| rs-fixed-point | 800 | 1 | 0 |
-| rs-bounded | 600 | 1 | 0 |
-| rs-arena | 400 | 1 | 0 |
-| rs-channel | 500 | 1 | 0 |
-| rs-addressed | 500 | 1 | 1 |
-| rs-epoch | 300 | 1 | 1 |
-| rs-deterministic | 400 | 1 | 1 |
-| rs-registers | 800 | 2 | 1 |
-| rs-cell | 2000 | 3 | 1 |
-| rs (facade) | 100 | 0.5 | 2 |
-| tests | 500 | 2 | 3 |
-| **Total** | **~7,050** | **~16** | |
+| Component | Lines | Sessions |
+|-----------|------:|:--------:|
+| rs (library: core + bounded + arena + channel + fixed_point) | 2,550 | 4 |
+| rs-macros (addressed + epoch + deterministic + registers + cell) | 4,000 | 8 |
+| tests | 500 | 2 |
+| **Total** | **~7,050** | **~14** |
 
-16 sessions = ~48 focused hours. With parallel work on Layer 0 crates, effective time compresses.
+14 sessions = ~42 focused hours.
 
-**External dependency:** `cyber-hemera` v0.2.0 (crates.io) provides Hemera hash (Poseidon2/Goldilocks sponge). `Particle` is a type alias for `hemera::Hash` (64 bytes). No need to reimplement.
+**External dependency:** `cyber-hemera` v0.2.0 (crates.io) provides Hemera hash (Poseidon2/Goldilocks sponge). `Particle` is a type alias for `hemera::Hash` (64 bytes).
 
-**Parallelization:** Layer 0 crates (0.1–0.5) have no dependencies on each other. All five can be developed in parallel by separate agents, partitioned by crate directory. Layer 1 macros depend on Layer 0 but are independent of each other except rs-cell depends on rs-epoch. Layer 2 and 3 are sequential.
+**Parallelization:** The two crates can be developed in parallel by two agents (one on crates/rs/, one on crates/rs-macros/). Within each crate, modules are independent files.
 
 ---
 
-## Implementation Order (Sequential Path)
+## Implementation Order
 
-If working sequentially, priority order:
-
-1. **rs-core** — everything depends on it (includes Particle via cyber-hemera)
-2. **rs-bounded** — used everywhere (cell state, channels)
-3. **rs-fixed-point** — used in deterministic functions
-4. **rs-arena** — standalone, simple
-5. **rs-channel** — standalone
-6. **rs-addressed** — first macro, uses cyber-hemera via rs-core
-7. **rs-epoch** — simple macro, needed by rs-cell
-8. **rs-registers** — complex macro, independent
-9. **rs-deterministic** — simple macro, partial enforcement
-10. **rs-cell** — largest macro, uses everything
-11. **rs (facade)** — trivial, last
-12. **tests** — integration tests after all crates exist
+1. **rs: core module** — traits and types everything depends on
+2. **rs: bounded** — used everywhere (cell state, channels)
+3. **rs: fixed_point** — used in deterministic functions
+4. **rs: arena** — standalone
+5. **rs: channel** — standalone
+6. **rs-macros: addressed** — simplest macro, validates the macro setup
+7. **rs-macros: epoch** — simple, needed conceptually by cell
+8. **rs-macros: deterministic** — simple, partial enforcement
+9. **rs-macros: registers** — complex, independent
+10. **rs-macros: cell** — largest, uses everything
+11. **tests** — integration tests after both crates exist
 
 ---
 
@@ -389,7 +312,7 @@ After Phase 1 is stable and cyb os is running on library implementations:
 2. Add `rs` edition recognition
 3. Parser extension for `async(<duration>)` syntax
 4. Lint passes: no-heap, no-dyn, no-panic-unwind, deterministic transitivity, bounded async enforcement
-5. Register MMIO codegen (compiler-verified version of rs-registers macro)
+5. Register MMIO codegen (compiler-verified version of registers macro)
 6. Full rustc test suite + top 1000 no_std crates CI
 8. Rs-specific test suite
 
@@ -399,7 +322,7 @@ Estimated: ~2,500 lines of compiler patches. 4-6 sessions.
 
 ## Quality Gates
 
-Each crate must pass before moving to the next layer:
+Each module must pass before moving on:
 
 1. `cargo test` — all tests pass
 2. `cargo clippy` — zero warnings

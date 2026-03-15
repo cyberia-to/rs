@@ -9,7 +9,7 @@ tags: cyber, rs, reference
 | # | Primitive | Reference | Type |
 |---|-----------|-----------|------|
 | 1 | [Typed Registers](registers.md) | `#[register]` | Compiler (800L) |
-| 2 | [Bounded Async](async.md) | `async(duration)` | Compiler (500L) |
+| 2 | [Bounded Async](async.md) | `async(duration)` / `#[bounded_async]` | Proc-macro (200L) + rsc lint (200L) |
 | 3 | [Deterministic Functions](deterministic.md) | `#[deterministic]` | Compiler (400L) |
 | 4 | [Addressed Types](addressed.md) | `#[derive(Addressed)]` | Proc-macro (500L) |
 | 5 | [Epoch-Scoped State](epoch.md) | `#[epoch]` | Proc-macro (300L) |
@@ -20,3 +20,4 @@ tags: cyber, rs, reference
 
 - [Standard Library](stdlib.md) — fixed_point, bounded, channel, particle, arena
 - [Compiler](compiler.md) — architecture, line counts, build pipeline
+- [Error Catalog](errors.md) — all 30 diagnostics (RS001–RS507)

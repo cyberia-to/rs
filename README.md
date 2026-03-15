@@ -26,9 +26,9 @@ The file extension is `.rs`. The edition identifier is `rs`. The compiler binary
 |---|-----------|:-:|:-:|---|
 | 1 | [Typed Registers](reference/registers.md) | 800L | — | MMIO without unsafe |
 | 2 | [Bounded Async](reference/async.md) | 500L | — | No unbounded waits |
-| 3 | [Deterministic Fns](reference/deterministic.md) | 400L | — | Same output everywhere |
+| 3 | [Deterministic Functions](reference/deterministic.md) | 400L | — | Same output everywhere |
 | 4 | [Addressed Types](reference/addressed.md) | — | 500L | Identity from content |
-| 5 | [Step State](reference/step.md) | — | 300L | No state leaks |
+| 5 | [Step-Scoped State](reference/step.md) | — | 300L | No state leaks |
 | 6 | [Cells](reference/cells.md) | — | 2000L | Hot-swap + lifecycle |
 | 7 | [Edition Restrictions](reference/restrictions.md) | 400L | — | No heap, no leaks |
 
@@ -40,7 +40,7 @@ Compiler patch: **~2,500 lines**. Library code: **~5,900 lines**. Rust compatibi
 - **[Design Principles](docs/explanation/design.md)** — superset, editions, zero keywords
 - **[Standard Library](reference/stdlib.md)** — fixed_point, bounded, channel, particle, arena
 - **[Compiler](reference/compiler.md)** — architecture, line counts, build pipeline
-- **[Migration Path](docs/how-to/migration.md)** — from library-only to compiler patch to upstream
+- **[Error Catalog](reference/errors.md)** — all 30 diagnostics (RS001–RS507)
 - **[Tutorial: cyb os Cell](docs/tutorials/cyb-cell.md)** — all seven primitives in one file
 
 Any Rust programmer can write Rs. Any LLM trained on Rust can generate Rs. Any no_std crate works with Rs. The ecosystem is not forked — it is extended.

@@ -392,14 +392,14 @@ No `git clone` of rust-lang/rust. No `./x.py build` taking hours. The vendor scr
 Session:  1    2    3    4    5    6    7    8    9   10   11   12
 Track A: [core][bnd][fp ][ar+ch]
 Track B:       [addr][stp][det][reg][reg][cel][cel][cel]
-Track C: [scaf][easy lints][async][deterministic ][diag]
+Track C: [scaf][lint][dyn][det][diag]
 Tests:                                              [int][int]
 ```
 
 Track A (core/) starts first — core module provides types everything depends on.
 Track B (macros/) starts session 2 — needs core types.
-Track C (rsc/) starts session 1 — lint passes don't depend on rs-lang types. Simple lints (no_heap, no_dyn, no_panic) can ship immediately.
-Tests start session 10 — after all three tracks have enough to integrate.
+Track C (rsc/) starts session 1 — scaffold, then lint passes, then diagnostics. 5 sessions (1-5).
+Tests start session 11 — after all three tracks complete.
 
 ### Summary
 
@@ -425,17 +425,16 @@ Enforcement arrives incrementally, not as a big-bang Phase 2:
 
 | Session | What ships |
 |---------|-----------|
-| 1 | core types (Address, Particle, Timeout, traits) |
-| 2 | BoundedVec/BoundedMap/ArrayString + rsc scaffold + `#[derive(Addressed)]` |
-| 3 | rs_no_heap, rs_no_dyn, rs_no_panic_unwind lints active in rsc |
-| 4 | FixedPoint + `#[step]` + rs_bounded_async lint |
-| 5 | Arena + Channel + `#[deterministic]` (proc-macro level) |
-| 6-7 | `#[register]` + rs_deterministic lint (MIR-level, transitivity) |
-| 8-9 | `cell!` macro |
-| 10 | Diagnostics + full rsc error messages |
+| 1 | core types (Address, Particle, Timeout, traits) + rsc scaffold |
+| 2 | BoundedVec/BoundedMap/ArrayString + rs_no_heap, rs_no_dyn, rs_no_panic_unwind lints + `#[derive(Addressed)]` |
+| 3 | FixedPoint + `#[step]` + rs_bounded_async lint |
+| 4 | Arena + Channel + rs_deterministic lint (MIR-level) |
+| 5 | `#[deterministic]` (proc-macro level) + rs diagnostics |
+| 6-7 | `#[register]` |
+| 8-10 | `cell!` macro |
 | 11-12 | Integration tests, full compatibility verification |
 
-By session 3, developers already get compiler warnings for heap usage, dyn dispatch, and panic-unwind in rs edition code.
+By session 2, developers already get compiler warnings for heap usage, dyn dispatch, and panic-unwind in rs edition code.
 
 ---
 

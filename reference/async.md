@@ -88,6 +88,8 @@ In standard Rust editions, `async(duration)` is available but not required.
 
 ## Implementation
 
+Code examples below use the `rs::` logical namespace. In Rust code, import as `rs_lang::` (see [stdlib.md](stdlib.md)).
+
 Inside `cell!` macro: the macro parses `async(dur) fn` from its own token stream and generates the timeout wrapping. The deadline expression must be a const expression of type `Duration`.
 
 Outside cells: the `#[bounded_async(dur)]` attribute macro provides the same functionality with standard Rust syntax:

@@ -25,7 +25,8 @@ edition = "rs"
 ```
 
 In `rs` edition:
-- Heap allocation primitives (`Box`, `Vec`, `String`, `HashMap`) produce compile errors unless explicitly opted-in via `#[allow(rs::heap)]`
+- Heap allocation primitives (`Box`, `Vec`, `String`) produce compile errors unless explicitly opted-in via `#[allow(rs::heap)]`
+- Non-deterministic collections (`HashMap`, `HashSet`) produce compile errors unless opted-in via `#[allow(rs::nondeterministic)]`
 - `dyn Trait` produces a compile error unless opted-in via `#[allow(rs::dyn_dispatch)]`
 - `panic!()` with unwinding produces a compile error; only `abort` mode is permitted
 - Floating point types (`f32`, `f64`) are forbidden inside `#[deterministic]` functions

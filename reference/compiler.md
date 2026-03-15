@@ -30,18 +30,20 @@ tags: cyber, rs, reference
 │  │  │     Lint Passes (injected)     │  │    │
 │  │  │  ┌──────────────────────────┐  │  │    │
 │  │  │  │  Rs Edition Lints        │  │  │    │
-│  │  │  │  - no heap (~200 lines)  │  │  │    │
+│  │  │  │  - no heap (~250 lines)  │  │  │    │
 │  │  │  │  - no dyn  (~50 lines)   │  │  │    │
 │  │  │  │  - no panic-unwind       │  │  │    │
 │  │  │  │    (~50 lines)           │  │  │    │
+│  │  │  │  - no nondeterministic   │  │  │    │
+│  │  │  │    (~50 lines)           │  │  │    │
 │  │  │  │  - deterministic full    │  │  │    │
-│  │  │  │    (~300 lines)          │  │  │    │
+│  │  │  │    (~350 lines)          │  │  │    │
 │  │  │  │  - bounded async check   │  │  │    │
 │  │  │  │    (~200 lines)          │  │  │    │
 │  │  │  │  - step context          │  │  │    │
 │  │  │  │    (~100 lines)          │  │  │    │
 │  │  │  │  - addressed verify      │  │  │    │
-│  │  │  │    (~100 lines)          │  │  │    │
+│  │  │  │    (~150 lines)          │  │  │    │
 │  │  │  └──────────────────────────┘  │  │    │
 │  │  └─────────────┬──────────────────┘  │    │
 │  │                │                     │    │
@@ -64,9 +66,9 @@ tags: cyber, rs, reference
 │  ┌──────────────────────────────────────┐    │
 │  │  rs-lang (library crate)             │    │
 │  │  directory: core/                    │    │
-│  │  - core (+ cyber-hemera)        150L │    │
+│  │  - core (+ cyber-hemera)        200L │    │
 │  │  - fixed_point                  800L │    │
-│  │  - bounded                      600L │    │
+│  │  - bounded                      650L │    │
 │  │  - channel                      500L │    │
 │  │  - arena                        400L │    │
 │  └──────────────────────────────────────┘    │
@@ -98,7 +100,7 @@ Advantages over forking:
 
 | Component | Location | Lines | Nature |
 |-----------|----------|------:|--------|
-| Rs edition lints (7 passes) | rsc/patches/ | 1,200 | Injected lint passes |
+| Rs edition lints (8 passes) | rsc/patches/ | 1,200 | Injected lint passes |
 | Rs edition recognition | rsc/patches/ | 100 | Injected edition variant |
 | Rs diagnostics and error messages | rsc/patches/ | 300 | Injected error codes |
 | apply.nu (vendor+patch script) | rsc/patches/ | 400 | Build script |

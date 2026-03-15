@@ -70,7 +70,7 @@ tags: cyber, rs, reference
 │  │  - rs::fixed_point           800L    │    │
 │  │  - rs::bounded               600L    │    │
 │  │  - rs::channel               500L    │    │
-│  │  - rs::cid (Hemera)          800L    │    │
+│  │  - rs::particle (Hemera)          800L    │    │
 │  │  - rs::arena                 400L    │    │
 │  └──────────────────────────────────────┘    │
 │                                              │
@@ -97,7 +97,7 @@ tags: cyber, rs, reference
 | `rs::fixed_point` | library crate | 800 | Standard Rust |
 | `rs::bounded` | library crate | 600 | Standard Rust |
 | `rs::channel` | library crate | 500 | Standard Rust |
-| `rs::cid` (Hemera) | library crate | 800 | Standard Rust |
+| `rs::particle` (Hemera) | library crate | 800 | Standard Rust |
 | `rs::arena` | library crate | 400 | Standard Rust |
 | **Library subtotal** | | **3,100** | |
 | **Total** | | **~8,350** | |

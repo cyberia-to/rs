@@ -24,7 +24,7 @@ When you treat the word as an element of F_p rather than a machine integer, seve
 1. **Hardware access becomes typed** — Registers are projections from field elements to bit ranges, not raw pointer dereferences. Safety is algebraic, not manual.
 2. **Async must be bounded** — In a deterministic system, an unbounded wait is not just a bug but a consensus failure. Deadlines are part of the type, not an afterthought.
 3. **Functions can be deterministic by construction** — If your arithmetic is over F_p, you don't need floats, random sources, or platform-dependent behavior. The compiler can verify this.
-4. **Identity is addressing** — In F_p, equal values are identical. Hashing to a CID is the natural identity operation. All addressing reduces to hashing.
+4. **Identity is addressing** — In F_p, equal values are identical. Hashing to a particle is the natural identity operation. All addressing reduces to hashing.
 5. **State has temporal scope** — Field elements don't carry hidden history. State that should reset between epochs should be declared as such.
 6. **Modules are algebraic cells** — A module with typed state, bounded interface, and migration rules is a morphism between system states.
 7. **Allocation is bounded** — Field elements live in finite structures. Unbounded heap allocation is an escape from the algebraic model.

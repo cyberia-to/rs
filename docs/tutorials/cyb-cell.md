@@ -40,8 +40,8 @@ mod net_dma {
 // Addressed data structure
 #[derive(Addressed, BorshSerialize, Clone)]
 pub struct Cyberlink {
-    pub from: Cid,
-    pub to: Cid,
+    pub from: Particle,
+    pub to: Particle,
     pub agent: Address,
     pub height: u64,
 }
@@ -54,8 +54,8 @@ cell! {
     heartbeat: 1s,
 
     state {
-        links: BoundedMap<Cid, Cyberlink, 10_000_000>,
-        agent_links: BoundedMap<Address, BoundedVec<Cid, 100_000>, 1_000_000>,
+        links: BoundedMap<Particle, Cyberlink, 10_000_000>,
+        agent_links: BoundedMap<Address, BoundedVec<Particle, 100_000>, 1_000_000>,
         link_count: u64,
     }
 
@@ -68,24 +68,24 @@ cell! {
     #[deterministic]
     pub fn add_cyberlink(
         &mut self,
-        from: Cid,
-        to: Cid,
+        from: Particle,
+        to: Particle,
         agent: Address,
-    ) -> Result<Cid> {
+    ) -> Result<Particle> {
         let link = Cyberlink {
             from, to, agent,
             height: self.current_epoch(),
         };
 
-        let cid = link.cid();
+        let particle = link.particle();
 
-        self.state.links.try_insert(cid, link.clone())
+        self.state.links.try_insert(particle, link.clone())
             .map_err(|_| Error::GraphFull)?;
 
         self.state.agent_links
             .entry(agent)
             .or_default()
-            .try_push(cid)
+            .try_push(particle)
             .map_err(|_| Error::AgentLimitReached)?;
 
         self.epoch_state.new_links_this_epoch.try_push(link)
@@ -95,18 +95,18 @@ cell! {
             .checked_add(1)
             .ok_or(Error::Overflow)?;
 
-        Ok(cid)
+        Ok(particle)
     }
 
-    /// Query links from a CID. Bounded async — 50ms max.
-    pub async(50ms) fn get_outlinks(&self, cid: Cid) -> Result<Vec<Cyberlink>> {
+    /// Query links from a particle. Bounded async — 50ms max.
+    pub async(50ms) fn get_outlinks(&self, from: Particle) -> Result<Vec<Cyberlink>> {
         // Vec allowed here because it's a query return, not persistent state
         // (could also use BoundedVec if strict)
         #[allow(rs::heap)]
         let mut results = Vec::new();
 
         for (_, link) in self.state.links.iter() {
-            if link.from == cid {
+            if link.from == from {
                 results.push(link.clone());
             }
         }

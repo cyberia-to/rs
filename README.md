@@ -38,7 +38,7 @@ Compiler patch: **~2,450 lines**. Library code: **~5,900 lines**. Rust compatibi
 
 - **[Why Rs Exists](docs/explanation/why.md)** — the algebraic foundation
 - **[Design Principles](docs/explanation/design.md)** — superset, editions, zero keywords
-- **[Standard Library](reference/stdlib.md)** — fixed_point, bounded, channel, cid, arena
+- **[Standard Library](reference/stdlib.md)** — fixed_point, bounded, channel, particle, arena
 - **[Compiler](reference/compiler.md)** — architecture, line counts, build pipeline
 - **[Migration Path](docs/how-to/migration.md)** — from library-only to compiler patch to upstream
 - **[Tutorial: cyb os Cell](docs/tutorials/cyb-cell.md)** — all seven primitives in one file

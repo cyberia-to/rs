@@ -13,7 +13,7 @@ Before the compiler patch exists, all Rs concepts except two can be used as stan
 | Typed registers | `rs-registers` proc-macro | No compiler verification of MMIO safety |
 | Bounded async | `rs-async` with timeout wrapper | Not enforced, opt-in |
 | Deterministic functions | `rs-deterministic` proc-macro | Partial: catches float but not all cases |
-| Addressed types | `rs-cid` derive macro (Hemera) | Full functionality |
+| Addressed types | `rs-particle` derive macro (Hemera) | Full functionality |
 | Epoch-scoped state | `rs-epoch` attribute macro | No cross-cell enforcement |
 | Cell declarations | `rs-cell` proc-macro | Full functionality |
 | Owned regions | `rs-lint` clippy plugin | Advisory warnings, not errors |

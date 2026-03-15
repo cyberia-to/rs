@@ -52,16 +52,16 @@ match tx.try_send(transaction) {
 let msg = rx.recv().await;  // Inherits caller's deadline
 ```
 
-## `rs::cid`
+## `rs::particle`
 
 ```rust
-use rs::cid::Cid;
+use rs::particle::Particle;
 
 let data = b"hello world";
-let cid = Cid::from_bytes(data);  // Hemera hash
+let particle = Particle::from_bytes(data);  // Hemera hash
 
-// Cid is Copy, 64 bytes (8 Goldilocks field elements), comparable, hashable
-let map: BoundedMap<Cid, Data, 10_000> = BoundedMap::new();
+// Particle is Copy, 64 bytes (8 Goldilocks field elements), comparable, hashable
+let map: BoundedMap<Particle, Data, 10_000> = BoundedMap::new();
 ```
 
 ## `rs::arena`

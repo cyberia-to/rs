@@ -55,6 +55,12 @@ Hash function: Hemera — a Poseidon2 sponge over the Goldilocks field (p = 2⁶
 | Contains `f32`/`f64` | `error[RS302]: floating point types are not canonically serializable` |
 | Contains raw pointers | `error[RS303]: pointers cannot be addressed` |
 | Contains `HashMap` | `error[RS304]: HashMap has non-deterministic serialization; use BTreeMap` |
+| Contains `usize` or `isize` | `error[RS305]: usize/isize width is platform-dependent; use u32 or u64` |
+| Enum has `#[repr]` wider than u32 | `error[RS306]: Addressed enum discriminant must fit in u32; #[repr(u64)] is not supported` |
+
+## Serialization Order for Collections
+
+`BoundedMap<K, V, N>` serializes entries in key-sorted order (ascending). This matches `BTreeMap` iteration order and guarantees canonical output regardless of insertion order.
 
 ## Implementation
 
@@ -62,4 +68,4 @@ Implemented as a proc-macro (no compiler changes required). Works in both standa
 
 ## Error Reference
 
-See [errors/addressed.md](errors/addressed.md) for detailed descriptions of RS301–RS304.
+See [errors/addressed.md](errors/addressed.md) for detailed descriptions of RS301–RS306.

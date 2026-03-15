@@ -141,6 +141,8 @@ impl aic::Enable {
 | Address outside declared bank | `error[RS007]: offset 0x2000 exceeds bank_size 0x1000` |
 | Enum does not cover all bit patterns | `error[RS008]: IrqMode has 3 variants but field mode is 2 bits (4 patterns) — add a variant for pattern 3` |
 
+RS004 fires only for compile-time constants and literals that provably exceed the field width. For runtime values, the generated code applies bit masking (e.g. `val.target_cpu as u32 & 0xF`), silently truncating to the field width. This is consistent with the no-panic restriction in `edition = "rs"` — a runtime range check would require a panic or error path.
+
 ## Usage
 
 ```rust

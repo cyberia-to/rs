@@ -66,6 +66,10 @@ async(Duration::from_millis(100)) fn inner() -> Result<Data> {
 
 The effective deadline is `min(own_deadline, caller_remaining)`. Deadlines propagate inward, never expand.
 
+## Time Source
+
+The time source backing `with_deadline` is provided by the runtime, not by the compiler. For deterministic systems (consensus nodes), the runtime must use logical time (step-based or block-height-based) so that deadline expiration is identical across all nodes. Wall-clock time is acceptable only in non-deterministic contexts. Rs enforces the *presence* of a deadline; the runtime determines the *clock* that measures it.
+
 ## Rs Edition Enforcement
 
 In `edition = "rs"`:

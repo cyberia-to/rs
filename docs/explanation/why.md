@@ -15,7 +15,9 @@ But there is a class of systems where this model breaks:
 - **Knowledge graphs** where data identity is derived from content, not location
 - **Verifiable systems** where computation must be reproducible and provable
 
-These systems need bytes to behave like elements of a finite field F_p: arithmetic that wraps predictably (mod p), operations that are deterministic by construction, and data structures whose identity is their content hash.
+These systems need bytes to behave like elements of a finite field F_p: operations that are deterministic by construction, and data structures whose identity is their content hash.
+
+F_p is the algebraic foundation, not the user-facing arithmetic model. User code operates on standard integer types with checked, wrapping, or saturating arithmetic — deterministic across platforms by construction. F_p manifests directly in two places: Hemera (Poseidon2 sponge over the Goldilocks field, used for content-addressed hashing) and future compatibility with Trident (proof-level arithmetic over F_p). The word is a field element in the sense that every byte sequence has a canonical interpretation as a Goldilocks element — this is what makes hashing algebraic rather than ad-hoc.
 
 ## What Changes When Bytes Are Field Elements
 

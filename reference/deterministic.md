@@ -40,6 +40,7 @@ Inside a `#[deterministic]` function, the compiler rejects:
 | `HashMap` iteration | Order is non-deterministic | RS207 |
 | Inline assembly | Platform-specific by definition | RS208 |
 | Calling non-`#[deterministic]` functions | Transitivity requirement | RS209 |
+| `usize`, `isize` types | Width is platform-dependent (32 or 64 bit) | RS210 |
 
 ## What IS Allowed
 
@@ -48,7 +49,7 @@ Inside a `#[deterministic]` function, the compiler rejects:
 - `saturating_*` arithmetic
 - `wrapping_*` arithmetic (deterministic across platforms)
 - `overflowing_*` arithmetic (returns value + overflow flag)
-- `BTreeMap`, `BTreeSet` (deterministic iteration order)
+- `BTreeMap`, `BTreeSet` (deterministic iteration order) — in `edition = "rs"`, use `BoundedMap`/`BoundedSet` instead (stack-allocated); `BTreeMap` requires `#[allow(rs::heap)]`
 - Arrays, slices with deterministic indexing
 - Other `#[deterministic]` functions
 - `const fn` (already deterministic)
@@ -94,4 +95,4 @@ Compiler implementation: ~400 lines (lint pass + diagnostics).
 
 ## Error Reference
 
-See [errors/deterministic.md](errors/deterministic.md) for detailed descriptions of RS201–RS209.
+See [errors/deterministic.md](errors/deterministic.md) for detailed descriptions of RS201–RS210.

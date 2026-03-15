@@ -131,7 +131,9 @@ impl MigrateFrom<ConsensusStateV2> for ConsensusState {
 // 6. Public interface methods (impl block)
 impl Consensus {
     pub fn propose_block(&self, txs: &[Transaction]) -> Result<Block> { /* ... */ }
-    pub async(Duration::from_millis(200)) fn vote(&mut self, block: &Block) -> Result<Vote> { /* ... */ }
+    pub fn vote(&mut self, block: &Block) -> impl Future<Output = Result<Vote>> {
+        rs::runtime::with_deadline(Duration::from_millis(200), async move { /* ... */ })
+    }
     pub fn validator_set(&self) -> &BTreeMap<Address, StakeAmount> { /* ... */ }
     fn verify_proposer(&self, proposer: Address) -> bool { /* ... */ }
 }
@@ -196,10 +198,11 @@ The hot-swap protocol is a mechanical process. The spec defines *how* cells swap
 1. New cell version is loaded (trigger is external to the protocol)
 2. Current step completes normally
 3. At step boundary: old cell's state is serialized via `CanonicalSerialize`
-4. `MigrateFrom::migrate()` transforms state to new version
-5. New cell is initialized with migrated state
-6. New cell starts processing next step
-7. Old cell binary is unloaded
+4. Serialized bytes are deserialized into the previous version's state struct (`XxxStateVN`)
+5. `MigrateFrom::migrate()` transforms the old state struct to the new version
+6. New cell is initialized with migrated state
+7. New cell starts processing next step
+8. Old cell binary is unloaded
 
 Total downtime: zero. Migration happens in the gap between steps. The system never stops.
 

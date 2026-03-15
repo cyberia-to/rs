@@ -1,0 +1,11 @@
+[package]
+name = "rs-lang"
+version = "0.1.0"
+edition = "2021"
+description = "Rs standard library — types, bounded collections, fixed-point, arena, channels"
+
+[dependencies]
+
+[features]
+default = []
+std = []

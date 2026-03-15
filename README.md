@@ -32,7 +32,7 @@ The file extension is `.rs`. The edition identifier is `rs`. The compiler binary
 | 6 | [Cell Declarations](reference/cells.md) | — | 2000L | Hot-swap + lifecycle |
 | 7 | [Edition Restrictions](reference/restrictions.md) | 400L | — | No heap, no leaks |
 
-Compiler patch: **~2,500 lines**. Library code: **~5,900 lines**. Rust compatibility: **100%**.
+Compiler patch: **~2,000 lines**. Library + macros: **~6,550 lines**. Rust compatibility: **100%**.
 
 ## Documentation
 
@@ -40,7 +40,7 @@ Compiler patch: **~2,500 lines**. Library code: **~5,900 lines**. Rust compatibi
 - **[Design Principles](docs/explanation/design.md)** — superset, editions, zero keywords
 - **[Standard Library](reference/stdlib.md)** — fixed_point, bounded, channel, particle, arena
 - **[Compiler](reference/compiler.md)** — architecture, line counts, build pipeline
-- **[Error Catalog](reference/errors.md)** — all 30 diagnostics (RS001–RS507)
+- **[Error Catalog](reference/errors.md)** — all 33 diagnostics (RS001–RS507)
 - **[Tutorial: cyb os Cell](docs/tutorials/cyb-cell.md)** — all seven primitives in one file
 
 Any Rust programmer can write Rs. Any LLM trained on Rust can generate Rs. Any no_std crate works with Rs. The ecosystem is not forked — it is extended.

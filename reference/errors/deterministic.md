@@ -2,11 +2,11 @@
 tags: cyber, rs, reference
 ---
 
-# Deterministic Errors (RS201–RS209)
+# Deterministic Errors (RS201–RS210)
 
 [Back to Error Catalog](../errors.md) | Spec: [deterministic.md](../deterministic.md)
 
-Enforcement: proc-macro (RS201–RS205, RS207, RS208) + rsc lint (RS206, RS209).
+Enforcement: proc-macro (RS201–RS205, RS207, RS208) + rsc lint (RS206, RS209, RS210).
 
 ---
 
@@ -162,3 +162,27 @@ Enforcement: **rsc lint only** (MIR call graph analysis). The proc-macro cannot 
 #### Fix
 
 Mark the callee `#[deterministic]`, make it `const fn`, or restructure to avoid the call.
+
+---
+
+### RS210: Platform-dependent integer types
+
+```text
+error[RS210]: usize used in #[deterministic] function
+  help: usize is 32 bits on 32-bit platforms and 64 bits on 64-bit platforms; use u32 or u64
+```
+
+`usize` and `isize` have platform-dependent width. A function that operates on `usize` values may produce different results (overflow, truncation) on 32-bit vs 64-bit targets.
+
+Enforcement: **rsc lint only** (HIR type analysis). The proc-macro cannot reliably distinguish `usize` from other integer types in all contexts.
+
+#### Fix
+
+```rust
+#[deterministic]
+fn index_value(data: &[u8], idx: u32) -> Option<u8> {
+    data.get(idx as usize).copied()  // usize used only for slice indexing, not computation
+}
+```
+
+Use `u32` or `u64` for values that participate in arithmetic or are serialized. `usize` is permitted only as a transient cast for slice/array indexing where the value originates from a fixed-width type.

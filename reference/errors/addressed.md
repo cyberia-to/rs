@@ -2,7 +2,7 @@
 tags: cyber, rs, reference
 ---
 
-# Addressed Errors (RS301–RS304)
+# Addressed Errors (RS301–RS306)
 
 [Back to Error Catalog](../errors.md) | Spec: [addressed.md](../addressed.md)
 
@@ -79,3 +79,50 @@ HashMap iteration order is randomized. Serializing a HashMap produces different 
 #### Fix
 
 Use `BTreeMap` (deterministic iteration order) or `BoundedMap` (sorted array-backed).
+
+---
+
+### RS305: Platform-dependent integer fields
+
+```text
+error[RS305]: usize/isize width is platform-dependent; use u32 or u64
+  help: canonical serialization requires fixed-width integers
+```
+
+`usize` and `isize` serialize to different byte widths on different platforms (4 bytes on 32-bit, 8 bytes on 64-bit). Canonical serialization requires every value to produce identical bytes regardless of platform.
+
+#### Fix
+
+Replace `usize`/`isize` fields with `u32` or `u64`:
+
+```rust
+#[derive(Addressed)]
+struct Entry {
+    index: u32,   // not usize
+    offset: u64,  // not usize
+}
+```
+
+---
+
+### RS306: Enum repr wider than u32
+
+```text
+error[RS306]: Addressed enum discriminant must fit in u32; #[repr(u64)] is not supported
+  help: canonical serialization encodes enum discriminants as u32
+```
+
+Addressed enums serialize discriminants as `u32` (4 bytes, little-endian). An enum with `#[repr(u64)]` could have discriminant values exceeding `u32::MAX`, which would be truncated during serialization.
+
+#### Fix
+
+Use `#[repr(u8)]`, `#[repr(u16)]`, or `#[repr(u32)]`:
+
+```rust
+#[derive(Addressed)]
+#[repr(u16)]
+enum Status {
+    Active = 0,
+    Inactive = 1,
+    Suspended = 2,
+}

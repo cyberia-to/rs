@@ -46,8 +46,10 @@ When `async(D) fn foo() -> T` is called:
 
 1. An internal timer starts with duration `D`
 2. Every `.await` inside the function checks the remaining time
-3. If the timer expires before the function returns, the future resolves to `Err(Rs::Timeout)`
-4. The return type is transparently wrapped: `async(D) fn foo() -> T` actually returns `Result<T, Rs::Timeout>` at the future level
+3. If the timer expires before the function returns, the future resolves to a timeout error
+4. Return type wrapping depends on the declared return type:
+   - `-> Result<T, E>` becomes `-> Result<T, rs::Error<E>>` (E is wrapped, no double-Result)
+   - `-> T` (non-Result) becomes `-> Result<T, rs::Timeout>`
 
 Nested calls:
 
@@ -93,14 +95,14 @@ The parser recognizes `async ( <expr> )` as a bounded async marker. The deadline
 The desugaring:
 
 ```rust
-// Source:
-async(Duration::from_millis(100)) fn foo(x: u32) -> Result<Bar> {
+// Source (where Result<Bar> = Result<Bar, AppError>):
+async(Duration::from_millis(100)) fn foo(x: u32) -> Result<Bar, AppError> {
     let a = something().await;
     Ok(a.into())
 }
 
 // Desugared to (approximately):
-fn foo(x: u32) -> impl Future<Output = Result<Bar, rs::Error>> {
+fn foo(x: u32) -> impl Future<Output = Result<Bar, rs::Error<AppError>>> {
     rs::runtime::with_deadline(Duration::from_millis(100), async move {
         let a = something().await;
         Ok(a.into())
@@ -111,12 +113,14 @@ fn foo(x: u32) -> impl Future<Output = Result<Bar, rs::Error>> {
 The `rs::Error` enum unifies application errors with timeout:
 
 ```rust
-pub enum rs::Error<E = Box<dyn core::error::Error>> {
+pub enum rs::Error<E> {
     App(E),
     Timeout,
 }
+
+pub struct rs::Timeout;  // used when the original return type has no error
 ```
 
-When the user writes `-> Result<Bar>`, the desugared return type is `Result<Bar, rs::Error>`. When the user writes `-> T` (no Result), the desugared return type is `Result<T, rs::Timeout>`. There is no double-wrapping.
+When the user writes `-> Result<T, E>`, the desugared return type is `Result<T, rs::Error<E>>`. When the user writes `-> T` (non-Result), the desugared return type is `Result<T, rs::Timeout>`. There is no double-wrapping.
 
 Parser changes: ~200 lines. Desugaring: ~300 lines. Diagnostic messages: ~100 lines.

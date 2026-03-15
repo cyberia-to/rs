@@ -1,56 +1,5 @@
 # Rs Implementation Plan
 
-## Spec Issues to Resolve Before Implementation
-
-These issues must be decided before writing code. Each has a proposed resolution.
-
-### 1. Duration literals (`100ms`, `1s`)
-
-**Problem:** `100ms` is not a valid Rust expression. Used in `async(100ms)`, `budget: 500ms`, `heartbeat: 1s`.
-
-**Resolution for Phase 1 (library):** Use macro-level DSL that parses these tokens as `ident` + `ident`. The `cell!` macro and `rs_async!` wrapper parse `100 ms` as two tokens or `100ms` as a single ident, then desugar to `Duration::from_millis(100)`. This works because proc-macros see raw token streams.
-
-**Resolution for Phase 2 (compiler):** Parser extension recognizes `<integer_literal><duration_suffix>` as a Duration literal. Suffixes: `ns`, `us`, `ms`, `s`. ~50 lines of parser code.
-
-### 2. Register width
-
-**Resolution:** Default to u32. Add optional `width` parameter to `#[reg]`: `#[reg(offset = 0x10, access = "rw", width = 64)]`. Width determines read/write volatile type. Default 32 covers 99% of embedded use cases.
-
-### 3. Bounded async return type
-
-**Resolution:** The function signature `async(D) fn foo() -> T` desugars so the future output is `Result<T, rs::Timeout>`. If `T` is already `Result<U, E>`, the output is `Result<U, rs::Error>` where `rs::Error` is an enum `{ App(E), Timeout }`. This avoids double-Result. The library version wraps with `rs::timeout(duration, future)` which returns `Result<T, rs::Timeout>`.
-
-### 4. Addressed + BorshSerialize
-
-**Resolution:** `#[derive(Addressed)]` generates its own canonical serialization (field-order, LE, no padding). It does NOT use Borsh. The tutorial example is wrong — remove `BorshSerialize` from the derive list. If users also need Borsh for network serialization, they derive it separately, but it's unrelated to addressing.
-
-### 5. Line count for regions
-
-**Resolution:** Regions = no-heap lint (200L) + no-dyn lint (50L) + no-panic-unwind lint (50L) + diagnostics (100L) = 400L compiler. README rounds down to 250 because it only counts the two main lints. Update all documents to say 400L. Total compiler patch becomes ~2,600L.
-
-### 6. wrapping_* arithmetic in deterministic
-
-**Resolution:** Allow `wrapping_*` — they are deterministic across platforms. Also allow `overflowing_*` (returns tuple with overflow flag). Add to the "What IS Allowed" section.
-
-### 7. Migration state schema
-
-**Resolution:** The `cell!` macro requires previous version state structs to be in scope. The convention: `ConsensusStateV2` must be defined (or imported) in the same module. The macro generates `MigrateFrom<ConsensusStateV2>` impl. The user is responsible for keeping old state structs available. In practice, these are versioned modules: `mod v2 { pub struct State { ... } }`.
-
-### 8. transmute in register enum codegen
-
-**Resolution:** Replace `transmute` with explicit `match` in generated read code. For `IrqMode`:
-```rust
-match ((raw >> 5) & 0x3) as u8 {
-    0 => IrqMode::Edge,
-    1 => IrqMode::Level,
-    2 => IrqMode::Hybrid,
-    _ => unreachable!(), // compiler proves this via field width check
-}
-```
-The compiler already validates that enum variants cover the bit range, so `unreachable!()` is sound.
-
----
-
 ## Implementation Strategy
 
 Phase 1 first: everything as standard Rust crates. This follows the migration.md plan and lets cyb os development start immediately.
@@ -116,8 +65,8 @@ src/lib.rs
   - trait MigrateFrom<T> { fn migrate(old: T) -> Self; }
   - struct FunctionSignature { name, args, ret, deadline }
   - trait CellMetadata { fn interface() -> &[FunctionSignature]; }
-  - enum RsError { Timeout, Full, Overflow, Custom(E) }
-  - mod duration — helper for parsing duration in macro context
+  - enum Error<E> { App(E), Timeout }  // bounded async error wrapper
+  - struct Timeout                      // standalone timeout marker
 ```
 
 No dependencies beyond `core`/`no_std`.
@@ -338,7 +287,6 @@ src/lib.rs (proc-macro = true)
     - MigrateFrom impl
     - CellMetadata impl (interface introspection)
     - __epoch_reset glue
-  - Duration parsing: handle `100ms`, `1s` as token pairs
   - Validation:
     - Version is u32
     - Budget and heartbeat are valid durations
@@ -473,11 +421,10 @@ After Phase 1 is stable and cyb os is running on library implementations:
 3. Parser extension for `async(<duration>)` syntax
 4. Lint passes: no-heap, no-dyn, no-panic-unwind, deterministic transitivity, bounded async enforcement
 5. Register MMIO codegen (compiler-verified version of rs-registers macro)
-6. Duration literal syntax (`100ms` → `Duration::from_millis(100)`)
-7. Full rustc test suite + top 1000 no_std crates CI
+6. Full rustc test suite + top 1000 no_std crates CI
 8. Rs-specific test suite
 
-Estimated: ~2,600 lines of compiler patches. 4-6 sessions.
+Estimated: ~2,500 lines of compiler patches. 4-6 sessions.
 
 ---
 

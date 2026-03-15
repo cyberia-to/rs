@@ -9,7 +9,7 @@ This example demonstrates all seven Rs primitives working together in a single f
 ```rust
 // edition = "rs" (set in Cargo.toml: edition = "rs")
 
-use rs::prelude::*;
+use rs_lang::prelude::*;
 
 // Hardware register for network DMA
 #[register(base = 0x4000_0000, bank_size = 0x100)]
@@ -129,7 +129,7 @@ cell! {
 
 This file:
 - Is valid Rs (compiles with `rsc --edition rs` or via `Cargo.toml` edition)
-- Is *almost* valid standard Rust (compiles with `rustc` if Rs proc-macros are available, minus `async(Duration::from_millis(50))` syntax)
+- Is *almost* valid standard Rust (compiles with `rustc` + `rs-lang`/`rs-lang-macros` crates, minus `async(Duration::from_millis(50))` syntax inside `cell!`)
 - Has zero `unsafe`
 - Has compile-time MMIO verification
 - Has determinism guarantees on state transitions

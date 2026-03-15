@@ -4,6 +4,8 @@ tags: cyber, rs, reference
 
 # Rs Standard Library Extensions
 
+Module paths below use the `rs::` logical namespace. The crate on crates.io is `rs-lang`; in Rust code, import as `use rs_lang::prelude::*;` or `use rs_lang::fixed_point::FixedPoint;`.
+
 ## `rs::fixed_point`
 
 ```rust
@@ -40,7 +42,7 @@ let s: ArrayString<64> = ArrayString::try_from("hello")?;
 use rs::channel::{bounded_channel, Sender, Receiver};
 
 // Wait-free bounded MPMC channel
-let (tx, rx) = bounded_channel::<Transaction>(1000);
+let (tx, rx) = bounded_channel::<Transaction, 1000>();
 
 // Non-blocking send
 match tx.try_send(transaction) {

@@ -24,13 +24,13 @@ The file extension is `.rs`. The edition identifier is `rs`. The compiler binary
 
 | # | Primitive | Compiler | Library | Guarantee |
 |---|-----------|:-:|:-:|---|
-| 1 | [Typed Registers](reference/registers.md) | 800L | — | MMIO without unsafe |
-| 2 | [Bounded Async](reference/async.md) | 500L | — | No unbounded waits |
-| 3 | [Deterministic Functions](reference/deterministic.md) | 400L | — | Same output everywhere |
-| 4 | [Addressed Types](reference/addressed.md) | — | 500L | Identity from content |
-| 5 | [Step-Scoped State](reference/step.md) | — | 300L | No state leaks |
-| 6 | [Cell Declarations](reference/cells.md) | — | 2000L | Hot-swap + lifecycle |
-| 7 | [Edition Restrictions](reference/restrictions.md) | 400L | — | No heap, no leaks |
+| 1 | [Typed Registers](reference/registers.md) | ✓ | — | MMIO without unsafe |
+| 2 | [Bounded Async](reference/async.md) | ✓ | — | No unbounded waits |
+| 3 | [Deterministic Functions](reference/deterministic.md) | ✓ | — | Same output everywhere |
+| 4 | [Addressed Types](reference/addressed.md) | — | ✓ | Identity from content |
+| 5 | [Step-Scoped State](reference/step.md) | — | ✓ | No state leaks |
+| 6 | [Cell Declarations](reference/cells.md) | — | ✓ | Hot-swap + lifecycle |
+| 7 | [Edition Restrictions](reference/restrictions.md) | ✓ | — | No heap, no leaks |
 
 Compiler patch: **~2,000 lines**. Library + macros: **~6,550 lines**. Rust compatibility: **100%**.
 

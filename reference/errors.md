@@ -4,7 +4,7 @@ tags: cyber, rs, reference
 
 # Error Catalog
 
-33 diagnostics across 6 categories. All error codes are stable — proc-macros and compiler lints emit identical codes.
+33 diagnostics across 6 categories. All error codes are stable. Some codes are enforced by proc-macro only, some by rsc lint only, and some by both — see enforcement levels below.
 
 | Category | Codes | Count | Spec | Enforcement |
 |----------|-------|------:|------|-------------|

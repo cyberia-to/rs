@@ -169,7 +169,7 @@ fn configure_interrupts() {
 ## Unsafe Accounting
 
 The `unsafe` blocks exist only inside compiler-generated code. They are:
-- Exactly 2 per register (one `read_volatile`, one `write_volatile`)
+- Up to 2 per register (one `read_volatile` for readable registers, one `write_volatile` for writable registers)
 - Generated from verified attribute metadata
 - Not visible to or writable by the user
 - Auditable in compiler source (~200 lines of codegen)

@@ -18,7 +18,7 @@ Before the compiler patch exists, all Rs concepts except two can be used as stan
 | Cell declarations | `rs-cell` proc-macro | Full functionality |
 | Owned regions | `rs-lint` clippy plugin | Advisory warnings, not errors |
 
-This means CyberOS development can start immediately using standard Rust with Rs libraries.
+This means cyb os development can start immediately using standard Rust with Rs libraries.
 
 ## Phase 2: Compiler Patch
 
@@ -31,7 +31,7 @@ Apply the ~2,450 line patch to rustc. All library-based Rs code continues to wor
 ## Phase 3: Upstream
 
 Propose individual Rs features as Rust RFCs where appropriate:
-- `#[deterministic]` has general value beyond CyberOS
+- `#[deterministic]` has general value beyond cyb os
 - Bounded async could benefit any reliability-critical Rust code
 - Typed registers would benefit the entire embedded Rust ecosystem
 

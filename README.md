@@ -41,7 +41,7 @@ Compiler patch: **~2,450 lines**. Library code: **~5,900 lines**. Rust compatibi
 - **[Standard Library](reference/stdlib.md)** — fixed_point, bounded, channel, cid, arena
 - **[Compiler](reference/compiler.md)** — architecture, line counts, build pipeline
 - **[Migration Path](docs/how-to/migration.md)** — from library-only to compiler patch to upstream
-- **[Tutorial: CyberOS Cell](docs/tutorials/cyberos-cell.md)** — all seven primitives in one file
+- **[Tutorial: cyb os Cell](docs/tutorials/cyb-cell.md)** — all seven primitives in one file
 
 Any Rust programmer can write Rs. Any LLM trained on Rust can generate Rs. Any no_std crate works with Rs. The ecosystem is not forked — it is extended.
 

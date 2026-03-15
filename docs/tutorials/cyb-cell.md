@@ -1,8 +1,8 @@
 ---
-tags: cyber, rs, tutorial
+tags: cyb, rs, tutorial
 ---
 
-# Tutorial: Complete CyberOS Cell in Rs
+# Tutorial: Complete Cyb OS Cell in Rs
 
 This example demonstrates all seven Rs primitives working together in a single file.
 
@@ -46,7 +46,7 @@ pub struct Cyberlink {
     pub height: u64,
 }
 
-// A complete CyberOS cell
+// A complete cyb os cell
 cell! {
     name: KnowledgeGraph,
     version: 1,

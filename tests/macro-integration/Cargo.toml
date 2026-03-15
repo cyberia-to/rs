@@ -1,0 +1,8 @@
+[package]
+name = "rs-macro-integration-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rs-lang = { path = "../../core", features = ["macros"] }

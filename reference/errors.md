@@ -12,7 +12,7 @@ tags: cyber, rs, reference
 | [Async](errors/async.md) | RS101 | 1 | [async.md](async.md) | rsc lint |
 | [Deterministic](errors/deterministic.md) | RS201–RS209 | 9 | [deterministic.md](deterministic.md) | proc-macro (partial) + rsc lint (full) |
 | [Addressed](errors/addressed.md) | RS301–RS304 | 4 | [addressed.md](addressed.md) | proc-macro + rsc lint |
-| [Epoch](errors/epoch.md) | RS401 | 1 | [epoch.md](epoch.md) | rsc lint |
+| [Step](errors/step.md) | RS401 | 1 | [step.md](step.md) | rsc lint |
 | [Regions](errors/regions.md) | RS501–RS507 | 7 | [regions.md](regions.md) | rsc lint |
 
 ## Code Ranges
@@ -22,7 +22,7 @@ RS0xx — Typed registers (MMIO validation)
 RS1xx — Bounded async (deadline enforcement)
 RS2xx — Deterministic functions (purity checks)
 RS3xx — Addressed types (canonical serialization)
-RS4xx — Epoch-scoped state (context enforcement)
+RS4xx — Step-scoped state (context enforcement)
 RS5xx — Owned regions (allocation restrictions)
 ```
 

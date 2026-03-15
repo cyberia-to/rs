@@ -9,9 +9,9 @@ tags: cyber, rs, reference
 Rs is a compiler. It defines the *shape* of a cell and enforces structural correctness at compile time. The runtime consumes cell declarations and provides lifecycle management.
 
 **Rs enforces (compile time):**
-- State and epoch_state structs are well-formed
+- State and step_state structs are well-formed
 - Migration implementations type-check against previous version
-- Epoch state resets are generated correctly
+- Step state resets are generated correctly
 - Public interface is introspectable via `CellMetadata`
 - Bounded async deadlines are present on async methods
 
@@ -20,7 +20,7 @@ Rs is a compiler. It defines the *shape* of a cell and enforces structural corre
 - `heartbeat` — liveness interval; the runtime monitors it
 - `health_check()` — the runtime calls it; the cell implements it
 - Channel connections — the runtime wires them at initialization
-- Hot-swap protocol — the runtime drives epoch boundaries and triggers migration
+- Hot-swap protocol — the runtime drives step boundaries and triggers migration
 
 Rs validates that these declarations are syntactically and type-correct. The runtime decides what to do with them.
 
@@ -47,8 +47,8 @@ cell! {
         votes: BoundedVec<Vote, MAX_VALIDATORS>,
     }
 
-    // Epoch-scoped state (auto-reset each epoch)
-    epoch_state {
+    // Step-scoped state (auto-reset each step)
+    step_state {
         round_votes: BoundedVec<Vote, MAX_VALIDATORS>,
         proposed_block: Option<Block>,
     }
@@ -92,9 +92,9 @@ pub struct ConsensusState {
     votes: BoundedVec<Vote, MAX_VALIDATORS>,
 }
 
-// 2. Epoch state struct (with auto-reset)
-#[epoch]
-pub struct ConsensusEpochState {
+// 2. Step state struct (with auto-reset)
+#[step]
+pub struct ConsensusStepState {
     round_votes: BoundedVec<Vote, MAX_VALIDATORS>,
     proposed_block: Option<Block>,
 }
@@ -102,7 +102,7 @@ pub struct ConsensusEpochState {
 // 3. Cell struct wrapping both
 pub struct Consensus {
     state: ConsensusState,
-    epoch_state: ConsensusEpochState,
+    step_state: ConsensusStepState,
 }
 
 // 4. Cell trait implementation
@@ -112,9 +112,9 @@ impl Cell for Consensus {
     const BUDGET: Duration = Duration::from_millis(500);
     const HEARTBEAT: Duration = Duration::from_secs(1);
 
-    fn current_epoch(&self) -> u64;
+    fn current_step(&self) -> u64;
     fn health_check(&self) -> HealthStatus { /* ... */ }
-    fn reset_epoch_state(&mut self) { self.epoch_state.reset(); }
+    fn reset_step_state(&mut self) { self.step_state.reset(); }
 }
 
 // 5. Migration from v2
@@ -183,7 +183,7 @@ cyb os is a living system. Living systems replace their components continuously 
 The hot-swap protocol is a mechanical process. The spec defines *how* cells swap, not *who* or *what* triggers the swap. The trigger is external to the protocol — it could be a local operator, a governance decision, an automated upgrade pipeline, or the cell itself detecting that a new version is available. The protocol is the same regardless.
 
 ```
- Epoch N          Epoch N+1        Epoch N+2
+ Step N           Step N+1         Step N+2
  ┌──────┐        ┌──────────┐     ┌──────┐
  │Cell  │  drain │Cell v2    │     │Cell  │
  │v1    │───────>│loading +  │────>│v2    │
@@ -194,14 +194,14 @@ The hot-swap protocol is a mechanical process. The spec defines *how* cells swap
 ```
 
 1. New cell version is loaded (trigger is external to the protocol)
-2. Current epoch completes normally
-3. At epoch boundary: old cell's state is serialized via `CanonicalSerialize`
+2. Current step completes normally
+3. At step boundary: old cell's state is serialized via `CanonicalSerialize`
 4. `MigrateFrom::migrate()` transforms state to new version
 5. New cell is initialized with migrated state
-6. New cell starts processing next epoch
+6. New cell starts processing next step
 7. Old cell binary is unloaded
 
-Total downtime: zero. Migration happens in the gap between epochs. The system never stops.
+Total downtime: zero. Migration happens in the gap between steps. The system never stops.
 
 ## Error Types
 
@@ -212,7 +212,7 @@ The `cell!` macro generates a cell-specific error enum from the error variants u
 pub enum ConsensusError {
     GraphFull,
     AgentLimitReached,
-    EpochFull,
+    StepFull,
     Overflow,
     Timeout,  // auto-added if any method uses bounded async
 }

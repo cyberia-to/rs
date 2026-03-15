@@ -36,7 +36,7 @@ In standard Rust editions (`2021`, `2024`), none of these restrictions apply. Rs
 ## Zero New Keywords
 
 Rs introduces zero new keywords. All extensions use:
-- Attributes (`#[register]`, `#[deterministic]`, `#[epoch]`, `#[bounded_async]`)
+- Attributes (`#[register]`, `#[deterministic]`, `#[step]`, `#[bounded_async]`)
 - Derive macros (`#[derive(Addressed)]`)
 - Declarative macros (`cell! { }`)
 

@@ -67,14 +67,14 @@ Use index-based access or references instead of raw pointers.
 
 ```text
 error[RS204]: std::time::Instant used in #[deterministic] function
-  help: wall clock time is non-deterministic; use epoch counters
+  help: wall clock time is non-deterministic; use step counters
 ```
 
 Wall clock time varies between machines and runs.
 
 #### Fix
 
-Use epoch counters from the cell context (`self.current_epoch()`).
+Use step counters from the cell context (`self.current_step()`).
 
 ---
 

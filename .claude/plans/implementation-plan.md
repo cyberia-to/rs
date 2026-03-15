@@ -11,7 +11,7 @@ rs/
 ├── core/                   rs-lang on crates.io — types, bounded, arena, channel, fixed_point
 │   ├── Cargo.toml
 │   └── src/
-├── macros/                 rs-lang-macros on crates.io — addressed, epoch, deterministic,
+├── macros/                 rs-lang-macros on crates.io — addressed, step, deterministic,
 │   ├── Cargo.toml                                        registers, cell
 │   └── src/
 ├── rsc/                    compiler driver (vendor+patch, not a fork)
@@ -81,9 +81,9 @@ core/src/
 ```
   - type Address = [u8; 32]
   - type Particle = hemera::Hash        // re-export from cyber-hemera
-  - trait EpochReset { fn reset(&mut self); }
+  - trait StepReset { fn reset(&mut self); }
   - trait CanonicalSerialize { fn serialize_canonical<W: Write>(&self, w: &mut W); }
-  - trait Cell { const NAME, VERSION, BUDGET, HEARTBEAT; fn current_epoch(); fn health_check(); fn reset_epoch_state(); }
+  - trait Cell { const NAME, VERSION, BUDGET, HEARTBEAT; fn current_step(); fn health_check(); fn reset_step_state(); }
   - trait MigrateFrom<T> { fn migrate(old: T) -> Self; }
   - struct FunctionSignature { name, args, ret, deadline }
   - trait CellMetadata { fn interface() -> &[FunctionSignature]; }
@@ -168,7 +168,7 @@ All proc-macros in one crate. Mirrors serde's pattern (serde + serde_derive).
 macros/src/
   lib.rs          — proc-macro entry points (~50 lines)
   addressed.rs    — #[derive(Addressed)] (~500 lines)
-  epoch.rs        — #[epoch] attribute (~300 lines)
+  step.rs         — #[step] attribute (~300 lines)
   deterministic.rs — #[deterministic] attribute (~400 lines)
   registers.rs    — #[register] attribute on modules (~800 lines)
   cell.rs         — cell! {} macro (~2000 lines)
@@ -196,18 +196,18 @@ Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-lang`.
     - Reject types without CanonicalSerialize
 ```
 
-#### epoch (~300 lines)
+#### step (~300 lines)
 
 ```
-  - On statics: wraps the static in a newtype that tracks epoch
-  - On structs: generates EpochReset impl that resets all fields
-  - Generates __epoch_reset() function that resets all #[epoch] items in the module
+  - On statics: wraps the static in a newtype that tracks step
+  - On structs: generates StepReset impl that resets all fields
+  - Generates __step_reset() function that resets all #[step] items in the module
   - Reset rules by type:
     - AtomicU32/U64: store(0)
     - BoundedVec/BoundedMap: clear()
     - Option: None
     - bool: false, integers: 0
-    - Custom types: require EpochReset impl
+    - Custom types: require StepReset impl
 ```
 
 #### deterministic (~400 lines)
@@ -251,19 +251,19 @@ Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-lang`.
   - Parse cell declaration syntax:
     - name, version, budget, heartbeat
     - state { } block → generate XxxState struct
-    - epoch_state { } block → generate XxxEpochState struct with #[epoch]
+    - step_state { } block → generate XxxStepState struct with #[step]
     - input/output channel declarations
     - pub fn / fn methods → generate impl block
     - async(dur) fn → wrap with timeout (library-level)
     - migrate from vN { } → generate MigrateFrom impl
   - Generate:
-    - State struct + EpochState struct
+    - State struct + StepState struct
     - Cell wrapper struct
-    - Cell trait impl (including current_epoch)
+    - Cell trait impl (including current_step)
     - Error enum (collected from Error::Variant usage) with From<rs::Timeout>
     - MigrateFrom impl
     - CellMetadata impl (interface introspection)
-    - __epoch_reset glue
+    - __step_reset glue
   - Validation:
     - Version is u32
     - Budget and heartbeat are valid durations
@@ -337,9 +337,9 @@ All lint passes are regular Rust source files in `rsc/patches/`, injected into r
   - Allow with #[allow(rs::unbounded_async)]
 ```
 
-**rs_epoch.rs (~100 lines)** — RS401
+**rs_step.rs (~100 lines)** — RS401
 ```
-  - Flag #[epoch] state accessed outside cell context in rs edition
+  - Flag #[step] state accessed outside cell context in rs edition
 ```
 
 **rs_addressed.rs (~100 lines)** — RS301-RS304
@@ -391,7 +391,7 @@ No `git clone` of rust-lang/rust. No `./x.py build` taking hours. The vendor scr
 ```
 Session:  1    2    3    4    5    6    7    8    9   10   11   12
 Track A: [core][bnd][fp ][ar+ch]
-Track B:       [addr][epo][det][reg][reg][cel][cel][cel]
+Track B:       [addr][stp][det][reg][reg][cel][cel][cel]
 Track C: [scaf][easy lints][async][deterministic ][diag]
 Tests:                                              [int][int]
 ```
@@ -406,7 +406,7 @@ Tests start session 10 — after all three tracks have enough to integrate.
 | Track | Component | Lines | Sessions |
 |-------|-----------|------:|:--------:|
 | A | rs-lang (core + bounded + fixed_point + arena + channel) | 2,550 | 4 |
-| B | rs-lang-macros (addressed + epoch + deterministic + registers + cell) | 4,000 | 8 |
+| B | rs-lang-macros (addressed + step + deterministic + registers + cell) | 4,000 | 8 |
 | C | rsc (lint passes + edition + diagnostics + build pipeline) | 2,000 | 5 |
 | — | Integration tests | 500 | 2 |
 | | **Total** | **~9,050** | **12** (parallel) |
@@ -428,7 +428,7 @@ Enforcement arrives incrementally, not as a big-bang Phase 2:
 | 1 | core types (Address, Particle, Timeout, traits) |
 | 2 | BoundedVec/BoundedMap/ArrayString + rsc scaffold + `#[derive(Addressed)]` |
 | 3 | rs_no_heap, rs_no_dyn, rs_no_panic_unwind lints active in rsc |
-| 4 | FixedPoint + `#[epoch]` + rs_bounded_async lint |
+| 4 | FixedPoint + `#[step]` + rs_bounded_async lint |
 | 5 | Arena + Channel + `#[deterministic]` (proc-macro level) |
 | 6-7 | `#[register]` + rs_deterministic lint (MIR-level, transitivity) |
 | 8-9 | `cell!` macro |
@@ -469,7 +469,7 @@ Code compiled with standard rustc gets proc-macro enforcement only. Code compile
 | Bounded async | Timeout wrapping inside `cell!`; `#[bounded_async(dur)]` outside | RS101: all async fn must have deadline in rs edition |
 | Deterministic functions | `#[deterministic]` proc-macro: floats, HashMap, rand, unsafe, asm | + RS206: unchecked arithmetic, RS209: transitivity (MIR-level) |
 | Addressed types | `#[derive(Addressed)]`: full serialization + hashing | + RS301-304: MIR-level transitivity verification |
-| Epoch-scoped state | `#[epoch]` attribute macro: full reset generation | + RS401: cross-cell context enforcement |
+| Step-scoped state | `#[step]` attribute macro: full reset generation | + RS401: cross-cell context enforcement |
 | Cell declarations | `cell!` proc-macro: full code generation | Same (proc-macro handles it) |
 | Owned regions | Conventions only | RS501-507: heap, Vec, String, dyn, Arc/Rc, panic, HashMap/HashSet |
 

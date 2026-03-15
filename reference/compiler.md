@@ -38,7 +38,7 @@ tags: cyber, rs, reference
 │  │  │  │    (~300 lines)          │  │  │    │
 │  │  │  │  - bounded async check   │  │  │    │
 │  │  │  │    (~200 lines)          │  │  │    │
-│  │  │  │  - epoch context         │  │  │    │
+│  │  │  │  - step context          │  │  │    │
 │  │  │  │    (~100 lines)          │  │  │    │
 │  │  │  │  - addressed verify      │  │  │    │
 │  │  │  │    (~100 lines)          │  │  │    │
@@ -55,7 +55,7 @@ tags: cyber, rs, reference
 │  │  rs-lang-macros (proc-macro crate)   │    │
 │  │  directory: macros/                  │    │
 │  │  - #[derive(Addressed)]        500L  │    │
-│  │  - #[epoch]                    300L  │    │
+│  │  - #[step]                     300L  │    │
 │  │  - #[deterministic]            400L  │    │
 │  │  - #[register]                 800L  │    │
 │  │  - cell! { }                  2000L  │    │
@@ -143,7 +143,7 @@ Proc-macros and compiler lints enforce overlapping rules at different levels:
 | Addressed: type restrictions | Token-level reject | MIR transitivity verify |
 | Owned regions (RS501-507) | — | HIR type walk |
 | Bounded async enforcement | Inside `cell!` only | All async fn (RS101) |
-| Epoch context | Inside `cell!` only | Cross-cell enforcement (RS401) |
+| Step context | Inside `cell!` only | Cross-cell enforcement (RS401) |
 
 Code compiled with standard rustc gets proc-macro enforcement. Code compiled with rsc gets both layers. Same RS error codes in both.
 

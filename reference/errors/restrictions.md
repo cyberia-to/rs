@@ -6,7 +6,7 @@ tags: cyber, rs, reference
 
 [Back to Error Catalog](../errors.md) | Spec: [restrictions.md](../restrictions.md)
 
-Enforcement: rsc lint (rs edition only). Opt-out: `#[allow(rs::heap)]`.
+Enforcement: rsc lint (rs edition only). Opt-out: `#[allow(rs::heap)]` for heap restrictions, `#[allow(rs::dyn_dispatch)]` for dynamic dispatch, `#[allow(rs::nondeterministic)]` for non-deterministic collections. RS506 (unwinding panic) has no opt-out.
 
 ---
 
@@ -141,6 +141,8 @@ error[RS507]: non-deterministic collections forbidden in rs edition
 ```
 
 `HashMap` and `HashSet` use a randomized hasher — iteration order varies between runs. Forbidden in rs edition for determinism.
+
+Opt-out: `#[allow(rs::nondeterministic)]`.
 
 #### Fix
 

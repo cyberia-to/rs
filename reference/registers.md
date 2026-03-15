@@ -67,6 +67,10 @@ mod aic {
 }
 ```
 
+## Bit Ranges
+
+Field bit ranges use Rust's exclusive-end convention: `bits = start..end` covers bits `[start, end)`. Width = end − start. Example: `bits = 1..5` is 4 bits wide (bits 1, 2, 3, 4).
+
 ## Register Width
 
 The `width` parameter on `#[register]` sets the default register width in bits. Supported values: 8, 16, 32, 64. Default: 32. Individual registers can override with `#[reg(... width = 64)]`. The width determines the `read_volatile`/`write_volatile` pointer type (`u8`, `u16`, `u32`, `u64`).
@@ -133,7 +137,7 @@ impl aic::Enable {
 | Field exceeds register width | `error[RS003]: field target_cpu (bits 1..5) exceeds u32 width` |
 | Field value exceeds bit range | `error[RS004]: value 20 does not fit in 4-bit field target_cpu` |
 | Overlapping field bits | `error[RS005]: fields enabled and target_cpu overlap at bit 1` |
-| Enum variant exceeds field width | `error[RS006]: IrqMode has 3 variants but field mode is 2 bits (max 4)` |
+| Enum variant exceeds field width | `error[RS006]: IrqMode has 5 variants but field mode is 2 bits (max 4)` |
 | Address outside declared bank | `error[RS007]: offset 0x2000 exceeds bank_size 0x1000` |
 | Enum does not cover all bit patterns | `error[RS008]: IrqMode has 3 variants but field mode is 2 bits (4 patterns) — add a variant for pattern 3` |
 
@@ -169,6 +173,10 @@ The `unsafe` blocks exist only inside compiler-generated code. They are:
 - Auditable in compiler source (~200 lines of codegen)
 
 User-facing code contains zero `unsafe`.
+
+## Reserved Bits
+
+Bits not covered by any `#[field]` are reserved. The `write()` function builds from `Self::default()`, which zeroes reserved bits. The `modify()` function performs read-modify-write, preserving reserved bits. Use `modify()` when hardware requires reserved bits to retain their read-back values. Use `write()` only when zeroing reserved bits is safe (consult the hardware datasheet).
 
 ## Concurrent Access
 

@@ -84,7 +84,19 @@ Only `panic = "abort"` is permitted. This ensures stack unwinding never occurs, 
 
 ## Explicit Opt-In
 
-For interfacing with existing Rust crates that use heap allocation:
+Each restriction has a corresponding allow attribute for interfacing with existing Rust crates:
+
+| Error | Allow Attribute | Scope |
+|-------|----------------|-------|
+| RS501 (heap allocation) | `#[allow(rs::heap)]` | Lifts Box restriction |
+| RS502 (growable collections) | `#[allow(rs::heap)]` | Lifts Vec restriction |
+| RS503 (heap strings) | `#[allow(rs::heap)]` | Lifts String restriction |
+| RS504 (dynamic dispatch) | `#[allow(rs::dyn_dispatch)]` | Lifts dyn Trait restriction |
+| RS505 (reference counting) | `#[allow(rs::heap)]` | Lifts Arc/Rc restriction |
+| RS506 (unwinding panic) | No opt-out | Always enforced |
+| RS507 (non-deterministic collections) | `#[allow(rs::nondeterministic)]` | Lifts HashMap/HashSet restriction |
+
+`#[allow(rs::heap)]` covers RS501, RS502, RS503, and RS505 — all heap allocation restrictions. Apply at module or function scope:
 
 ```rust
 #[allow(rs::heap)]

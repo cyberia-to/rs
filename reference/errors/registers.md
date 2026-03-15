@@ -83,14 +83,30 @@ Adjust bit ranges so fields don't overlap.
 ### RS006: Enum variant exceeds field width
 
 ```text
-error[RS006]: IrqMode has 3 variants but field mode is 2 bits (max 4)
+error[RS006]: Priority has 5 variants but field priority is 2 bits (max 4)
 ```
 
-An enum used as a field type has more variants than the field's bit width can represent.
+An enum used as a field type has more variants than the field's bit width can represent. A 2-bit field can hold at most 4 values.
 
 #### Fix
 
 Remove variants or widen the field.
+
+```rust
+// 5 variants cannot fit in 2 bits (max 4):
+#[repr(u8)]
+enum Priority {
+    Idle = 0,
+    Low = 1,
+    Normal = 2,
+    High = 3,
+    Critical = 4,  // error: no room in 2 bits
+}
+
+// Fix: widen to 3 bits (max 8), or remove a variant
+#[field(bits = 0..3)]
+pub priority: Priority,
+```
 
 ---
 

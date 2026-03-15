@@ -158,6 +158,10 @@ The `old` binding has the type of the previous state struct (`v2::ConsensusState
 
 ## Hot-Swap Protocol
 
+cyb os is a living system. Living systems replace their components continuously without stopping — biological cells divide, differentiate, and die while the organism keeps running. cyb os cells follow the same principle: the system never reboots, modules update in place, and state migrates forward version by version.
+
+The hot-swap protocol is a mechanical process. The spec defines *how* cells swap, not *who* or *what* triggers the swap. The trigger is external to the protocol — it could be a local operator, a governance decision, an automated upgrade pipeline, or the cell itself detecting that a new version is available. The protocol is the same regardless.
+
 ```
  Epoch N          Epoch N+1        Epoch N+2
  ┌──────┐        ┌──────────┐     ┌──────┐
@@ -169,15 +173,15 @@ The `old` binding has the type of the previous state struct (`v2::ConsensusState
                   via MigrateFrom
 ```
 
-1. Governance approves new cell binary
+1. New cell version is loaded (trigger is external to the protocol)
 2. Current epoch completes normally
-3. At epoch boundary: old cell's state is serialized
+3. At epoch boundary: old cell's state is serialized via `CanonicalSerialize`
 4. `MigrateFrom::migrate()` transforms state to new version
 5. New cell is initialized with migrated state
 6. New cell starts processing next epoch
 7. Old cell binary is unloaded
 
-Total downtime: zero. Migration happens in the gap between epochs.
+Total downtime: zero. Migration happens in the gap between epochs. The system never stops.
 
 ## Error Types
 

@@ -63,6 +63,20 @@ let tx: &mut Transaction = arena.alloc(Transaction::default())?;
 // No fragmentation, no use-after-free, no leaks
 ```
 
+## Panic Restriction
+
+In `edition = "rs"`, unwinding panics are forbidden:
+
+```rust
+#![edition = "rs"]
+
+panic!("this will not compile");
+//~^ error[RS506]: unwinding panic forbidden in rs edition
+//~| help: use Result for recoverable errors, or abort for unrecoverable
+```
+
+Only `panic = "abort"` is permitted. This ensures stack unwinding never occurs, simplifying the runtime and making resource cleanup explicit.
+
 ## Explicit Opt-In
 
 For interfacing with existing Rust crates that use heap allocation:
@@ -75,4 +89,4 @@ mod legacy_compat {
 }
 ```
 
-Implementation: ~500 lines (lint pass checking for specific type paths).
+Implementation: ~400 lines (lint passes: no-heap ~200L, no-dyn ~50L, no-panic-unwind ~50L, diagnostics ~100L).

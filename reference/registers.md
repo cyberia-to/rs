@@ -15,7 +15,7 @@ Rs introduces the `#[register]` attribute, which declares a memory-mapped I/O re
 ## Syntax
 
 ```rust
-#[register(base = 0x23B10_0000, bank_size = 0x1000)]
+#[register(base = 0x23B10_0000, bank_size = 0x1000, width = 32)]
 mod aic {
     /// Interrupt controller enable register
     #[reg(offset = 0x010, access = "rw")]
@@ -66,6 +66,10 @@ mod aic {
 }
 ```
 
+## Register Width
+
+The `width` parameter on `#[register]` sets the default register width in bits. Supported values: 8, 16, 32, 64. Default: 32. Individual registers can override with `#[reg(... width = 64)]`. The width determines the `read_volatile`/`write_volatile` pointer type (`u8`, `u16`, `u32`, `u64`).
+
 ## Generated Code
 
 The compiler generates:
@@ -82,7 +86,12 @@ impl aic::Enable {
         Self {
             enabled: (raw & 0x1) != 0,
             target_cpu: ((raw >> 1) & 0xF) as u8,
-            mode: unsafe { core::mem::transmute(((raw >> 5) & 0x3) as u8) },
+            mode: match ((raw >> 5) & 0x3) as u8 {
+                0 => IrqMode::Edge,
+                1 => IrqMode::Level,
+                2 => IrqMode::Hybrid,
+                _ => unreachable!(), // compiler validates enum covers field width
+            },
         }
     }
 

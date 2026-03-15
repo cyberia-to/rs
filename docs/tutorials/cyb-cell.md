@@ -38,7 +38,7 @@ mod net_dma {
 }
 
 // Addressed data structure
-#[derive(Addressed, BorshSerialize, Clone)]
+#[derive(Addressed, Clone)]
 pub struct Cyberlink {
     pub from: Particle,
     pub to: Particle,
@@ -50,8 +50,8 @@ pub struct Cyberlink {
 cell! {
     name: KnowledgeGraph,
     version: 1,
-    budget: 1500ms,
-    heartbeat: 1s,
+    budget: Duration::from_millis(1500),
+    heartbeat: Duration::from_secs(1),
 
     state {
         links: BoundedMap<Particle, Cyberlink, 10_000_000>,
@@ -99,7 +99,7 @@ cell! {
     }
 
     /// Query links from a particle. Bounded async — 50ms max.
-    pub async(50ms) fn get_outlinks(&self, from: Particle) -> Result<Vec<Cyberlink>> {
+    pub async(Duration::from_millis(50)) fn get_outlinks(&self, from: Particle) -> Result<Vec<Cyberlink>> {
         // Vec allowed here because it's a query return, not persistent state
         // (could also use BoundedVec if strict)
         #[allow(rs::heap)]
@@ -129,7 +129,7 @@ cell! {
 
 This file:
 - Is valid Rs (compiles with `rsc --edition rs`)
-- Is *almost* valid standard Rust (compiles with `rustc` if Rs proc-macros are available, minus `async(50ms)` syntax)
+- Is *almost* valid standard Rust (compiles with `rustc` if Rs proc-macros are available, minus `async(Duration::from_millis(50))` syntax)
 - Has zero `unsafe`
 - Has compile-time MMIO verification
 - Has determinism guarantees on state transitions

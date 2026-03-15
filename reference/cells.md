@@ -18,8 +18,8 @@ The `cell!` macro declares a self-contained, hot-swappable OS module.
 cell! {
     name: Consensus,
     version: 3,
-    budget: 500ms,
-    heartbeat: 1s,
+    budget: Duration::from_millis(500),
+    heartbeat: Duration::from_secs(1),
 
     state {
         validators: BTreeMap<Address, StakeAmount>,
@@ -38,7 +38,7 @@ cell! {
         // ...
     }
 
-    pub async(200ms) fn vote(&mut self, block: &Block) -> Result<Vote> {
+    pub async(Duration::from_millis(200)) fn vote(&mut self, block: &Block) -> Result<Vote> {
         // ...
     }
 
@@ -110,7 +110,7 @@ impl MigrateFrom<ConsensusStateV2> for ConsensusState {
 // 6. Public interface methods (impl block)
 impl Consensus {
     pub fn propose_block(&self, txs: &[Transaction]) -> Result<Block> { /* ... */ }
-    pub async(200ms) fn vote(&mut self, block: &Block) -> Result<Vote> { /* ... */ }
+    pub async(Duration::from_millis(200)) fn vote(&mut self, block: &Block) -> Result<Vote> { /* ... */ }
     pub fn validator_set(&self) -> &BTreeMap<Address, StakeAmount> { /* ... */ }
     fn verify_proposer(&self, proposer: Address) -> bool { /* ... */ }
 }
@@ -120,12 +120,40 @@ impl CellMetadata for Consensus {
     fn interface() -> &'static [FunctionSignature] {
         &[
             FunctionSignature { name: "propose_block", args: &["&[Transaction]"], ret: "Result<Block>" },
-            FunctionSignature { name: "vote", args: &["&Block"], ret: "Result<Vote>", deadline: Some(200) },
+            FunctionSignature { name: "vote", args: &["&Block"], ret: "Result<Vote>", deadline: Some(Duration::from_millis(200)) },
             FunctionSignature { name: "validator_set", args: &[], ret: "&BTreeMap<Address, StakeAmount>" },
         ]
     }
 }
 ```
+
+## Migration State Schema
+
+The `migrate from vN` block generates `MigrateFrom<XxxStateVN>` impl. The previous version's state struct must be in scope at compile time. Convention: keep old state definitions in versioned modules alongside the cell.
+
+```rust
+// Previous version state — kept for migration
+mod v2 {
+    pub struct ConsensusState {
+        pub validators: BTreeMap<Address, StakeAmount>,
+        pub current_round: u64,
+    }
+}
+
+// Current cell uses v2::ConsensusState as the migration source
+cell! {
+    name: Consensus,
+    version: 3,
+    // ...
+    migrate from v2 {
+        validators: old.validators,
+        current_round: old.current_round,
+        votes: BoundedVec::new(),
+    }
+}
+```
+
+The `old` binding has the type of the previous state struct (`v2::ConsensusState`). The macro resolves `vN` to `{CellName}StateVN` (e.g. `ConsensusStateV2`) by convention. If a different type name is needed, use the full path: `migrate from my_module::OldState { ... }`.
 
 ## Hot-Swap Protocol
 

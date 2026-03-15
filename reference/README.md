@@ -14,7 +14,7 @@ tags: cyber, rs, reference
 | 4 | [Addressed Types](addressed.md) | `#[derive(Addressed)]` | Proc-macro (500L) |
 | 5 | [Epoch-Scoped State](epoch.md) | `#[epoch]` | Proc-macro (300L) |
 | 6 | [Cell Declarations](cells.md) | `cell! { }` | Proc-macro (2000L) |
-| 7 | [Owned Regions](regions.md) | `edition = "rs"` | Compiler (250L) |
+| 7 | [Owned Regions](regions.md) | `edition = "rs"` | Compiler (400L) |
 
 ## Infrastructure
 

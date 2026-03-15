@@ -23,7 +23,7 @@ async fn standard_function() -> Result<()> {
 }
 
 // Rs bounded async — deadline is part of the function signature
-async(100ms) fn read_block(lba: u64) -> Result<Block> {
+async(Duration::from_millis(100)) fn read_block(lba: u64) -> Result<Block> {
     let data = device.read(lba).await;  // .await inherits 100ms deadline
     Ok(Block::from(data))
 }
@@ -52,14 +52,14 @@ When `async(D) fn foo() -> T` is called:
 Nested calls:
 
 ```rust
-async(200ms) fn outer() -> Result<()> {
+async(Duration::from_millis(200)) fn outer() -> Result<()> {
     // inner gets at most the REMAINING time of outer, not its own 100ms
     // if outer has 50ms left, inner's effective deadline is 50ms
     let result = inner().await;
     Ok(())
 }
 
-async(100ms) fn inner() -> Result<Data> {
+async(Duration::from_millis(100)) fn inner() -> Result<Data> {
     // ...
 }
 ```
@@ -74,7 +74,7 @@ In `edition = "rs"`:
 // ERROR in rs edition: async fn without deadline
 async fn unbounded() -> Result<()> {
     //~^ error[RS101]: async functions must have a deadline in rs edition
-    //~| help: add a deadline: async(100ms) fn unbounded()
+    //~| help: add a deadline: async(Duration::from_millis(100)) fn unbounded()
 }
 
 // OK: explicit opt-out for rare cases (must justify)
@@ -88,22 +88,35 @@ In standard Rust editions, `async(duration)` is available but not required.
 
 ## Compiler Implementation
 
-The parser recognizes `async ( <expr> )` as a bounded async marker. The desugaring:
+The parser recognizes `async ( <expr> )` as a bounded async marker. The deadline expression must be a const expression of type `Duration`.
+
+The desugaring:
 
 ```rust
 // Source:
-async(100ms) fn foo(x: u32) -> Result<Bar> {
+async(Duration::from_millis(100)) fn foo(x: u32) -> Result<Bar> {
     let a = something().await;
     Ok(a.into())
 }
 
 // Desugared to (approximately):
-fn foo(x: u32) -> impl Future<Output = Result<Result<Bar>, rs::Timeout>> {
+fn foo(x: u32) -> impl Future<Output = Result<Bar, rs::Error>> {
     rs::runtime::with_deadline(Duration::from_millis(100), async move {
         let a = something().await;
         Ok(a.into())
     })
 }
 ```
+
+The `rs::Error` enum unifies application errors with timeout:
+
+```rust
+pub enum rs::Error<E = Box<dyn core::error::Error>> {
+    App(E),
+    Timeout,
+}
+```
+
+When the user writes `-> Result<Bar>`, the desugared return type is `Result<Bar, rs::Error>`. When the user writes `-> T` (no Result), the desugared return type is `Result<T, rs::Timeout>`. There is no double-wrapping.
 
 Parser changes: ~200 lines. Desugaring: ~300 lines. Diagnostic messages: ~100 lines.

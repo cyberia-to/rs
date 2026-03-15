@@ -34,6 +34,8 @@ tags: cyber, rs, reference
 │  │  │  │  Rs Edition Lints        │  │   │    │
 │  │  │  │  - no heap (~200 lines)  │  │   │    │
 │  │  │  │  - no dyn  (~50 lines)   │  │   │    │
+│  │  │  │  - no panic-unwind       │  │   │    │
+│  │  │  │    (~50 lines)           │  │   │    │
 │  │  │  │  - no float in det       │  │   │    │
 │  │  │  │    (~300 lines)          │  │   │    │
 │  │  │  │  - bounded async check   │  │   │    │
@@ -86,10 +88,11 @@ tags: cyber, rs, reference
 | Register MMIO codegen | rustc fork | 800 | Compiler patch |
 | Rs edition lint: no heap | rustc fork | 200 | Compiler patch |
 | Rs edition lint: no dyn | rustc fork | 50 | Compiler patch |
+| Rs edition lint: no panic-unwind | rustc fork | 50 | Compiler patch |
 | `#[deterministic]` lint pass | rustc fork | 400 | Compiler patch |
 | Bounded async enforcement lint | rustc fork | 200 | Compiler patch |
 | Rs diagnostics and error messages | rustc fork | 300 | Compiler patch |
-| **Compiler patch subtotal** | | **2,450** | |
+| **Compiler patch subtotal** | | **2,500** | |
 | `#[derive(Addressed)]` | proc-macro crate | 500 | Standard Rust |
 | `cell!` macro | proc-macro crate | 2,000 | Standard Rust |
 | `#[epoch]` attribute | proc-macro crate | 300 | Standard Rust |
@@ -100,9 +103,9 @@ tags: cyber, rs, reference
 | `rs::particle` (Hemera) | library crate | 800 | Standard Rust |
 | `rs::arena` | library crate | 400 | Standard Rust |
 | **Library subtotal** | | **3,100** | |
-| **Total** | | **~8,350** | |
+| **Total** | | **~8,400** | |
 
-The actual rustc patch is ~2,450 lines. Everything else is standard Rust crates that work with both `rsc` and `rustc`.
+The actual rustc patch is ~2,500 lines. Everything else is standard Rust crates that work with both `rsc` and `rustc`.
 
 ## Build Pipeline
 
@@ -110,7 +113,7 @@ The actual rustc patch is ~2,450 lines. Everything else is standard Rust crates 
 # Rs compiler is a patched rustc
 $ git clone https://github.com/AnyOrganization/rust.git rsc
 $ cd rsc
-$ git apply rs-compiler.patch   # ~2,450 lines
+$ git apply rs-compiler.patch   # ~2,500 lines
 $ ./x.py build
 
 # Compiles any .rs file

@@ -16,12 +16,12 @@ The `#[deterministic]` attribute marks functions that must produce identical res
 
 ```rust
 #[deterministic]
-fn compute_rank(weights: &[FixedPoint<u128, 18>]) -> FixedPoint<u128, 18> {
+fn compute_rank(weights: &[FixedPoint<u128, 18>]) -> Option<FixedPoint<u128, 18>> {
     let mut sum = FixedPoint::ZERO;
     for w in weights {
         sum = sum.checked_add(*w)?;  // checked arithmetic required
     }
-    sum
+    Some(sum)
 }
 ```
 
@@ -46,6 +46,8 @@ Inside a `#[deterministic]` function, the compiler rejects:
 - `FixedPoint<T, DECIMALS>` (Rs built-in fixed-point type)
 - `checked_add`, `checked_mul`, `checked_sub`, `checked_div`
 - `saturating_*` arithmetic
+- `wrapping_*` arithmetic (deterministic across platforms)
+- `overflowing_*` arithmetic (returns value + overflow flag)
 - `BTreeMap`, `BTreeSet` (deterministic iteration order)
 - Arrays, slices with deterministic indexing
 - Other `#[deterministic]` functions

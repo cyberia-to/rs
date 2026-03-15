@@ -22,11 +22,11 @@ This means cyb os development can start immediately using standard Rust with Rs 
 
 ## Phase 2: Compiler Patch
 
-Apply the ~2,450 line patch to rustc. All library-based Rs code continues to work. Compiler now also enforces:
+Apply the ~2,500 line patch to rustc. All library-based Rs code continues to work. Compiler now also enforces:
 - MMIO safety at compile time
 - Bounded async as requirement in Rs edition
 - Deterministic function purity
-- Heap/dyn restrictions in Rs edition
+- Heap/dyn/panic-unwind restrictions in Rs edition
 
 ## Phase 3: Upstream
 

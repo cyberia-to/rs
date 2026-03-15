@@ -92,6 +92,7 @@ impl Cell for Consensus {
     const BUDGET: Duration = Duration::from_millis(500);
     const HEARTBEAT: Duration = Duration::from_secs(1);
 
+    fn current_epoch(&self) -> u64;
     fn health_check(&self) -> HealthStatus { /* ... */ }
     fn reset_epoch_state(&mut self) { self.epoch_state.reset(); }
 }
@@ -177,5 +178,45 @@ The `old` binding has the type of the previous state struct (`v2::ConsensusState
 7. Old cell binary is unloaded
 
 Total downtime: zero. Migration happens in the gap between epochs.
+
+## Error Types
+
+The `cell!` macro generates a cell-specific error enum from the error variants used in the cell's methods. Error variants are referenced as `Error::VariantName` in the cell body. The macro collects all referenced variants and generates:
+
+```rust
+#[derive(Debug)]
+pub enum ConsensusError {
+    GraphFull,
+    AgentLimitReached,
+    EpochFull,
+    Overflow,
+    Timeout,  // auto-added if any method uses bounded async
+}
+
+impl From<rs::Timeout> for ConsensusError {
+    fn from(_: rs::Timeout) -> Self { ConsensusError::Timeout }
+}
+```
+
+Inside the cell body, `Error::GraphFull` resolves to `ConsensusError::GraphFull`. The `Result` type inside cell methods is `Result<T, ConsensusError>`.
+
+## Cell-to-Cell Communication
+
+Cells communicate through two mechanisms:
+
+1. **Bounded channels** — the `cell!` macro can declare typed input/output channels:
+
+```rust
+cell! {
+    name: Router,
+    // ...
+    input: BoundedChannel<Transaction, 1000>,
+    output: BoundedChannel<Block, 10>,
+}
+```
+
+Channels are wait-free (try_send/try_recv). The cell runtime connects channels between cells at initialization.
+
+2. **Read-only state references** — a cell can declare a dependency on another cell's public interface. The runtime provides a read-only reference at initialization. The dependent cell calls methods on this reference but cannot mutate the other cell's state.
 
 Implementation: proc-macro, ~2000 lines.

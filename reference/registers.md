@@ -54,6 +54,7 @@ mod aic {
         Edge = 0,
         Level = 1,
         Hybrid = 2,
+        Reserved = 3,  // must cover all bit patterns (2 bits = 4 values)
     }
 
     #[repr(u8)]
@@ -90,7 +91,8 @@ impl aic::Enable {
                 0 => IrqMode::Edge,
                 1 => IrqMode::Level,
                 2 => IrqMode::Hybrid,
-                _ => unreachable!(), // compiler validates enum covers field width
+                3 => IrqMode::Reserved,
+                _ => core::hint::unreachable_unchecked(), // bit mask guarantees exhaustive
             },
         }
     }
@@ -133,6 +135,7 @@ impl aic::Enable {
 | Overlapping field bits | `error[RS005]: fields enabled and target_cpu overlap at bit 1` |
 | Enum variant exceeds field width | `error[RS006]: IrqMode has 3 variants but field mode is 2 bits (max 4)` |
 | Address outside declared bank | `error[RS007]: offset 0x2000 exceeds bank_size 0x1000` |
+| Enum does not cover all bit patterns | `error[RS008]: IrqMode has 3 variants but field mode is 2 bits (4 patterns) — add a variant for pattern 3` |
 
 ## Usage
 
@@ -166,6 +169,10 @@ The `unsafe` blocks exist only inside compiler-generated code. They are:
 - Auditable in compiler source (~200 lines of codegen)
 
 User-facing code contains zero `unsafe`.
+
+## Concurrent Access
+
+Register access is inherently non-atomic at the bus level. The generated `read()` and `write()` functions perform a single `read_volatile`/`write_volatile` — they do not provide synchronization. If multiple contexts (interrupt handlers, cores) access the same register, the caller must provide synchronization (spinlock, critical section, per-core banking). The `modify()` function performs a read-modify-write sequence and is subject to TOCTOU if not externally synchronized.
 
 ## Fallback Compatibility
 

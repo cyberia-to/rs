@@ -47,9 +47,7 @@ When `async(D) fn foo() -> T` is called:
 1. An internal timer starts with duration `D`
 2. Every `.await` inside the function checks the remaining time
 3. If the timer expires before the function returns, the future resolves to a timeout error
-4. Return type wrapping depends on the declared return type:
-   - `-> Result<T, E>` becomes `-> Result<T, rs::Error<E>>` (E is wrapped, no double-Result)
-   - `-> T` (non-Result) becomes `-> Result<T, rs::Timeout>`
+4. The function must return `Result<T, E>` where `E: From<rs::Timeout>`. On timeout, the future resolves to `Err(E::from(rs::Timeout))`
 
 Nested calls:
 
@@ -95,32 +93,54 @@ The parser recognizes `async ( <expr> )` as a bounded async marker. The deadline
 The desugaring:
 
 ```rust
-// Source (where Result<Bar> = Result<Bar, AppError>):
+// Source:
 async(Duration::from_millis(100)) fn foo(x: u32) -> Result<Bar, AppError> {
-    let a = something().await;
+    let a = something().await?;
     Ok(a.into())
 }
 
 // Desugared to (approximately):
-fn foo(x: u32) -> impl Future<Output = Result<Bar, rs::Error<AppError>>> {
+fn foo(x: u32) -> impl Future<Output = Result<Bar, AppError>> {
     rs::runtime::with_deadline(Duration::from_millis(100), async move {
-        let a = something().await;
+        let a = something().await?;
         Ok(a.into())
     })
+    // on timeout: returns Err(AppError::from(rs::Timeout))
 }
 ```
 
-The `rs::Error` enum unifies application errors with timeout:
+The timeout marker type:
 
 ```rust
-pub enum rs::Error<E> {
-    App(E),
+/// Unit struct returned when a bounded async function exceeds its deadline.
+pub struct rs::Timeout;
+```
+
+The bounded async function's error type must implement `From<rs::Timeout>`. For functions where timeout is the only error, use `rs::Timeout` directly as the error type:
+
+```rust
+async(Duration::from_millis(50)) fn simple_read() -> Result<Data, rs::Timeout> {
+    // ...
+}
+```
+
+For functions with application-specific errors, include a timeout variant:
+
+```rust
+enum AppError {
+    NotFound,
+    InvalidData,
     Timeout,
 }
 
-pub struct rs::Timeout;  // used when the original return type has no error
-```
+impl From<rs::Timeout> for AppError {
+    fn from(_: rs::Timeout) -> Self { AppError::Timeout }
+}
 
-When the user writes `-> Result<T, E>`, the desugared return type is `Result<T, rs::Error<E>>`. When the user writes `-> T` (non-Result), the desugared return type is `Result<T, rs::Timeout>`. There is no double-wrapping.
+async(Duration::from_millis(100)) fn fetch(id: u64) -> Result<Item, AppError> {
+    // on timeout: Err(AppError::Timeout)
+    // on app error: Err(AppError::NotFound), etc.
+}
+```
 
 Parser changes: ~200 lines. Desugaring: ~300 lines. Diagnostic messages: ~100 lines.

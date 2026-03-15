@@ -37,10 +37,12 @@ The derived serializer follows strict rules:
 
 1. Fields are serialized in declaration order (not alphabetical, not random)
 2. Integers are serialized as little-endian fixed-width bytes
-3. Variable-length types (arrays) are prefixed with a u32 length
-4. No padding bytes between fields
-5. Enums serialized as discriminant (u32) + variant data
-6. Nested `Addressed` types are serialized as their Particle (64 bytes), not expanded
+3. `bool` is serialized as a single `u8` (0 = false, 1 = true)
+4. `Option<T>` is serialized as a `u8` tag (0 = None, 1 = Some) followed by `T` data if Some
+5. Variable-length types (arrays, slices) are prefixed with a u32 length
+6. No padding bytes between fields
+7. Enums serialized as discriminant (u32) + variant data
+8. Nested `Addressed` types are serialized as their Particle (64 bytes), not expanded
 
 Hash function: Hemera — a Poseidon2 sponge over the Goldilocks field (p = 2⁶⁴ − 2³² + 1), 64-byte output, producing a Particle. Parameters: state width 16 elements, rate 8, capacity 8, 8 full rounds, 64 partial rounds, S-box x⁷. Capacity 8 (256 bits) provides long-term collision resistance matching the permanence of particle addresses. See the Hemera spec for the full parameter rationale.
 

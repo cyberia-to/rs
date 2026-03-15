@@ -61,12 +61,11 @@ src/lib.rs
   - type Address = [u8; 32]
   - trait EpochReset { fn reset(&mut self); }
   - trait CanonicalSerialize { fn serialize_canonical(&self, buf: &mut Vec<u8>); }
-  - trait Cell { const NAME, VERSION, BUDGET, HEARTBEAT; fn health_check(); fn reset_epoch_state(); }
+  - trait Cell { const NAME, VERSION, BUDGET, HEARTBEAT; fn current_epoch(); fn health_check(); fn reset_epoch_state(); }
   - trait MigrateFrom<T> { fn migrate(old: T) -> Self; }
   - struct FunctionSignature { name, args, ret, deadline }
   - trait CellMetadata { fn interface() -> &[FunctionSignature]; }
-  - enum Error<E> { App(E), Timeout }  // bounded async error wrapper
-  - struct Timeout                      // standalone timeout marker
+  - struct Timeout                      // returned when bounded async exceeds deadline
 ```
 
 No dependencies beyond `core`/`no_std`.

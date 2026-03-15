@@ -15,7 +15,7 @@ In `edition = "rs"`, the compiler enforces a simpler ownership model through lin
 ## Restrictions
 
 ```rust
-#![edition = "rs"]
+// edition = "rs" (set in Cargo.toml or via rsc --edition rs)
 
 // FORBIDDEN (unless opted-in):
 
@@ -36,8 +36,13 @@ let d: Box<dyn Trait> = ...;
 //~| help: use generics or enum dispatch
 
 let r = Arc::new(data);
+let r2 = Rc::new(data);
 //~^ error[RS505]: reference counting forbidden in rs edition
 //~| help: use cell-owned state or bounded channels
+
+let s: HashSet<u32> = HashSet::new();
+//~^ error[RS507]: non-deterministic collections forbidden in rs edition
+//~| help: use BTreeSet for deterministic iteration order
 
 // ALLOWED:
 
@@ -68,7 +73,7 @@ let tx: &mut Transaction = arena.alloc(Transaction::default())?;
 In `edition = "rs"`, unwinding panics are forbidden:
 
 ```rust
-#![edition = "rs"]
+// edition = "rs"
 
 panic!("this will not compile");
 //~^ error[RS506]: unwinding panic forbidden in rs edition

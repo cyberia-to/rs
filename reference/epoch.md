@@ -33,6 +33,8 @@ fn process_transaction(tx: Transaction) {
 
 The runtime calls `EpochState::reset()` at the beginning of each epoch (block). This is injected by the cell infrastructure, not by user code.
 
+### On statics
+
 ```rust
 // Compiler generates this trait impl for every #[epoch] static:
 impl EpochReset for BoundedVec<Transaction, 10_000> {
@@ -47,6 +49,38 @@ fn __epoch_reset() {
     VOTES_THIS_ROUND.store(0, Ordering::SeqCst);
 }
 ```
+
+### On structs
+
+When `#[epoch]` is placed on a struct (as used in `cell!` generated code for `epoch_state` blocks), it generates an `EpochReset` impl that resets all fields:
+
+```rust
+#[epoch]
+pub struct ConsensusEpochState {
+    round_votes: BoundedVec<Vote, MAX_VALIDATORS>,
+    proposed_block: Option<Block>,
+}
+
+// Generated:
+impl EpochReset for ConsensusEpochState {
+    fn reset(&mut self) {
+        self.round_votes.clear();
+        self.proposed_block = None;
+    }
+}
+```
+
+Reset rules by field type:
+
+| Type | Reset to |
+|------|----------|
+| `BoundedVec<T, N>` | `clear()` |
+| `BoundedMap<K, V, N>` | `clear()` |
+| `Option<T>` | `None` |
+| `AtomicU32` / `AtomicU64` | `store(0)` |
+| `bool` | `false` |
+| Integer types | `0` |
+| Custom types | must implement `EpochReset` |
 
 ## Compile-Time Checks
 

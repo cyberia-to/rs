@@ -7,7 +7,7 @@ tags: cyb, rs, tutorial
 This example demonstrates all seven Rs primitives working together in a single file.
 
 ```rust
-#![edition = "rs"]
+// edition = "rs" (set in Cargo.toml: edition = "rs")
 
 use rs::prelude::*;
 
@@ -128,7 +128,7 @@ cell! {
 ```
 
 This file:
-- Is valid Rs (compiles with `rsc --edition rs`)
+- Is valid Rs (compiles with `rsc --edition rs` or via `Cargo.toml` edition)
 - Is *almost* valid standard Rust (compiles with `rustc` if Rs proc-macros are available, minus `async(Duration::from_millis(50))` syntax)
 - Has zero `unsafe`
 - Has compile-time MMIO verification

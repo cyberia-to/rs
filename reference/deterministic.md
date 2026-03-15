@@ -91,3 +91,7 @@ let d = a.checked_mul(b).unwrap();
 ```
 
 Compiler implementation: ~400 lines (lint pass + diagnostics).
+
+## Error Reference
+
+See [errors/deterministic.md](errors/deterministic.md) for detailed descriptions of RS201–RS209.

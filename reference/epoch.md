@@ -106,3 +106,7 @@ fn standalone() {
 ```
 
 Implementation: ~300 lines (attribute handling + lint pass).
+
+## Error Reference
+
+See [errors/epoch.md](errors/epoch.md) for detailed description of RS401.

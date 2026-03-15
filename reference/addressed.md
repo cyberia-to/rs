@@ -58,3 +58,7 @@ Hash function: Hemera — a Poseidon2 sponge over the Goldilocks field (p = 2⁶
 ## Implementation
 
 Implemented as a proc-macro (no compiler changes required). Works in both standard Rust and Rs editions. ~500 lines.
+
+## Error Reference
+
+See [errors/addressed.md](errors/addressed.md) for detailed descriptions of RS301–RS304.

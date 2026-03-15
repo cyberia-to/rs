@@ -95,3 +95,7 @@ mod legacy_compat {
 ```
 
 Implementation: ~400 lines (lint passes: no-heap ~200L, no-dyn ~50L, no-panic-unwind ~50L, diagnostics ~100L).
+
+## Error Reference
+
+See [errors/regions.md](errors/regions.md) for detailed descriptions of RS501–RS507.

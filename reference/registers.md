@@ -177,3 +177,7 @@ Register access is inherently non-atomic at the bus level. The generated `read()
 ## Fallback Compatibility
 
 In standard Rust mode (non-Rs edition), `#[register]` can be implemented as a proc-macro crate that generates the same code. This means Rs register declarations are valid Rust with the right dependency — they just lack the compiler-level verification.
+
+## Error Reference
+
+See [errors/registers.md](errors/registers.md) for detailed descriptions of RS001–RS008.

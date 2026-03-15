@@ -86,21 +86,26 @@ async fn special_case() -> Result<()> {
 
 In standard Rust editions, `async(duration)` is available but not required.
 
-## Compiler Implementation
+## Implementation
 
-The parser recognizes `async ( <expr> )` as a bounded async marker. The deadline expression must be a const expression of type `Duration`.
+Inside `cell!` macro: the macro parses `async(dur) fn` from its own token stream and generates the timeout wrapping. The deadline expression must be a const expression of type `Duration`.
 
-The desugaring:
+Outside cells: the `#[bounded_async(dur)]` attribute macro provides the same functionality with standard Rust syntax:
 
 ```rust
-// Source:
-async(Duration::from_millis(100)) fn foo(x: u32) -> Result<Bar, AppError> {
-    let a = something().await?;
-    Ok(a.into())
-}
+// Inside cell! — custom syntax, parsed by macro:
+pub async(Duration::from_millis(100)) fn fetch(&self) -> Result<Item, AppError> { ... }
 
-// Desugared to (approximately):
-fn foo(x: u32) -> impl Future<Output = Result<Bar, AppError>> {
+// Outside cell! — standard attribute syntax:
+#[bounded_async(Duration::from_millis(100))]
+async fn fetch(id: u64) -> Result<Item, AppError> { ... }
+```
+
+Both desugar to the same code:
+
+```rust
+// Desugared (approximately):
+fn fetch(id: u64) -> impl Future<Output = Result<Item, AppError>> {
     rs::runtime::with_deadline(Duration::from_millis(100), async move {
         let a = something().await?;
         Ok(a.into())
@@ -108,6 +113,8 @@ fn foo(x: u32) -> impl Future<Output = Result<Bar, AppError>> {
     // on timeout: returns Err(AppError::from(rs::Timeout))
 }
 ```
+
+No rustc parser modification needed. The `async(dur)` syntax only exists inside `cell!` token streams.
 
 The timeout marker type:
 
@@ -143,4 +150,8 @@ async(Duration::from_millis(100)) fn fetch(id: u64) -> Result<Item, AppError> {
 }
 ```
 
-Parser changes: ~200 lines. Desugaring: ~300 lines. Diagnostic messages: ~100 lines.
+Implementation: the `cell!` macro handles `async(dur)` syntax internally (~included in cell macro line count). Outside cells, `#[bounded_async(dur)]` attribute macro provides the same functionality (~200 lines in rs-lang-macros). No rustc parser modification needed. Diagnostic messages: ~100 lines.
+
+## Error Reference
+
+See [errors/async.md](errors/async.md) for detailed description of RS101.

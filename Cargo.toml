@@ -1,3 +1,4 @@
 [workspace]
 members = ["core", "macros"]
+exclude = ["rsc"]
 resolver = "2"

@@ -1,38 +1,71 @@
 //! rsc — Rs compiler driver.
 //!
-//! Thin wrapper around a patched rustc binary. All Rs-specific behavior
-//! lives in the injected lint passes; this binary just forwards arguments.
+//! A clippy-style rustc driver that registers Rs edition lint passes.
+//! Links against installed rustc libraries (via rustc-dev component).
 //!
-//! Build: `nu patches/apply.nu && cargo build --release`
-//! Usage: `rsc --edition rs my_program.rs`
+//! Usage:
+//!   rsc my_program.rs                    # compile with Rs lints
+//!   rsc --explain RS206                  # explain an Rs error code
+//!   rsc --rs-list-errors                 # list all Rs error codes
+
+#![feature(rustc_private)]
+#![feature(box_patterns)]
+
+extern crate rustc_driver;
+extern crate rustc_interface;
+extern crate rustc_session;
+extern crate rustc_lint;
+extern crate rustc_span;
+extern crate rustc_hir;
+extern crate rustc_middle;
+extern crate rustc_target;
+
+mod lints;
 
 use std::env;
-use std::process::{self, Command};
+use std::process;
+
+struct RsCallbacks;
+
+impl rustc_driver::Callbacks for RsCallbacks {
+    fn config(&mut self, config: &mut rustc_interface::interface::Config) {
+        let previous = config.register_lints.take();
+        config.register_lints = Some(Box::new(move |sess, store| {
+            if let Some(ref prev) = previous {
+                prev(sess, store);
+            }
+            lints::register_all(store);
+        }));
+    }
+}
 
 fn main() {
-    let vendor_rustc = env::current_exe()
-        .expect("cannot determine rsc binary path")
-        .parent()
-        .expect("binary has no parent directory")
-        .join("rsc-rustc");
+    let args: Vec<String> = env::args().collect();
 
-    if !vendor_rustc.exists() {
-        eprintln!(
-            "error: patched rustc not found at {}",
-            vendor_rustc.display()
-        );
-        eprintln!("hint: run `nu patches/apply.nu` first to build the patched compiler");
-        process::exit(1);
+    if args.iter().any(|a| a == "--rs-list-errors") {
+        print!("{}", lints::rs_diag::list_all());
+        return;
     }
 
-    let args: Vec<String> = env::args().skip(1).collect();
-    let status = Command::new(&vendor_rustc)
-        .args(&args)
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("error: failed to execute {}: {}", vendor_rustc.display(), e);
-            process::exit(1);
-        });
+    if let Some(pos) = args.iter().position(|a| a == "--explain") {
+        if let Some(code) = args.get(pos + 1) {
+            if code.starts_with("RS") {
+                if let Some(explanation) = lints::rs_diag::explain(code) {
+                    print!("{}", explanation);
+                } else {
+                    eprintln!("error: unknown Rs error code: {}", code);
+                    process::exit(1);
+                }
+                return;
+            }
+        }
+    }
 
-    process::exit(status.code().unwrap_or(1));
+    rustc_driver::install_ice_hook("https://github.com/nickcyber/rs/issues", |_| ());
+
+    let exit_code = rustc_driver::catch_with_exit_code(|| {
+        rustc_driver::run_compiler(&args, &mut RsCallbacks)
+    });
+
+    process::exit(exit_code as i32);
 }

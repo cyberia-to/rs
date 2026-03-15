@@ -9,59 +9,51 @@ tags: cyber, rs, reference
 ```
 ┌──────────────────────────────────────────────┐
 │                    rsc                        │
-│            (Rs Compiler)                      │
+│        (Rs Compiler Driver)                  │
 │                                              │
 │  ┌──────────────────────────────────────┐    │
-│  │           rustc (forked)              │    │
+│  │      rustc (vendored, not forked)    │    │
 │  │                                      │    │
-│  │  ┌────────────┐  ┌───────────────┐   │    │
-│  │  │   Parser    │  │  Rs Parser    │   │    │
-│  │  │  (unchanged)│  │  Extension    │   │    │
-│  │  │            │  │  async(dur)   │   │    │
-│  │  │            │  │  ~200 lines   │   │    │
-│  │  └─────┬──────┘  └──────┬────────┘   │    │
-│  │        │                │             │    │
-│  │        ▼                ▼             │    │
-│  │  ┌────────────────────────────────┐   │    │
-│  │  │          HIR / MIR             │   │    │
-│  │  │       (unchanged)              │   │    │
-│  │  └─────────────┬──────────────────┘   │    │
-│  │                │                      │    │
-│  │                ▼                      │    │
-│  │  ┌────────────────────────────────┐   │    │
-│  │  │        Lint Passes             │   │    │
-│  │  │  ┌──────────────────────────┐  │   │    │
-│  │  │  │  Rs Edition Lints        │  │   │    │
-│  │  │  │  - no heap (~200 lines)  │  │   │    │
-│  │  │  │  - no dyn  (~50 lines)   │  │   │    │
-│  │  │  │  - no panic-unwind       │  │   │    │
-│  │  │  │    (~50 lines)           │  │   │    │
-│  │  │  │  - no float in det       │  │   │    │
-│  │  │  │    (~300 lines)          │  │   │    │
-│  │  │  │  - bounded async check   │  │   │    │
-│  │  │  │    (~200 lines)          │  │   │    │
-│  │  │  └──────────────────────────┘  │   │    │
-│  │  └─────────────┬──────────────────┘   │    │
-│  │                │                      │    │
-│  │                ▼                      │    │
-│  │  ┌────────────────────────────────┐   │    │
-│  │  │        Codegen                 │   │    │
-│  │  │  ┌──────────────────────────┐  │   │    │
-│  │  │  │  Register MMIO codegen   │  │   │    │
-│  │  │  │  (~800 lines)            │  │   │    │
-│  │  │  │  Bounded async desugar   │  │   │    │
-│  │  │  │  (~300 lines)            │  │   │    │
-│  │  │  └──────────────────────────┘  │   │    │
-│  │  └─────────────┬──────────────────┘   │    │
-│  │                │                      │    │
-│  │                ▼                      │    │
-│  │  ┌────────────────────────────────┐   │    │
-│  │  │    LLVM Backend (unchanged)    │   │    │
-│  │  └────────────────────────────────┘   │    │
+│  │  ┌────────────┐                      │    │
+│  │  │   Parser    │  (unchanged)        │    │
+│  │  │            │  no syntax changes   │    │
+│  │  └─────┬──────┘                      │    │
+│  │        │                             │    │
+│  │        ▼                             │    │
+│  │  ┌────────────────────────────────┐  │    │
+│  │  │          HIR / MIR             │  │    │
+│  │  │       (unchanged)              │  │    │
+│  │  └─────────────┬──────────────────┘  │    │
+│  │                │                     │    │
+│  │                ▼                     │    │
+│  │  ┌────────────────────────────────┐  │    │
+│  │  │     Lint Passes (injected)     │  │    │
+│  │  │  ┌──────────────────────────┐  │  │    │
+│  │  │  │  Rs Edition Lints        │  │  │    │
+│  │  │  │  - no heap (~200 lines)  │  │  │    │
+│  │  │  │  - no dyn  (~50 lines)   │  │  │    │
+│  │  │  │  - no panic-unwind       │  │  │    │
+│  │  │  │    (~50 lines)           │  │  │    │
+│  │  │  │  - deterministic full    │  │  │    │
+│  │  │  │    (~300 lines)          │  │  │    │
+│  │  │  │  - bounded async check   │  │  │    │
+│  │  │  │    (~200 lines)          │  │  │    │
+│  │  │  │  - epoch context         │  │  │    │
+│  │  │  │    (~100 lines)          │  │  │    │
+│  │  │  │  - addressed verify      │  │  │    │
+│  │  │  │    (~100 lines)          │  │  │    │
+│  │  │  └──────────────────────────┘  │  │    │
+│  │  └─────────────┬──────────────────┘  │    │
+│  │                │                     │    │
+│  │                ▼                     │    │
+│  │  ┌────────────────────────────────┐  │    │
+│  │  │    LLVM Backend (unchanged)    │  │    │
+│  │  └────────────────────────────────┘  │    │
 │  └──────────────────────────────────────┘    │
 │                                              │
 │  ┌──────────────────────────────────────┐    │
-│  │  rs-macros (single proc-macro crate) │    │
+│  │  rs-lang-macros (proc-macro crate)   │    │
+│  │  directory: macros/                  │    │
 │  │  - #[derive(Addressed)]        500L  │    │
 │  │  - #[epoch]                    300L  │    │
 │  │  - #[deterministic]            400L  │    │
@@ -70,7 +62,8 @@ tags: cyber, rs, reference
 │  └──────────────────────────────────────┘    │
 │                                              │
 │  ┌──────────────────────────────────────┐    │
-│  │  rs (single library crate)            │    │
+│  │  rs-lang (library crate)             │    │
+│  │  directory: core/                    │    │
 │  │  - core (+ cyber-hemera)        150L │    │
 │  │  - fixed_point                  800L │    │
 │  │  - bounded                      600L │    │
@@ -81,44 +74,78 @@ tags: cyber, rs, reference
 └──────────────────────────────────────────────┘
 ```
 
+## Vendor+Patch Technique
+
+rsc uses the same technique as Trisha (~/git/trisha): fetch upstream source, inject hooks via surgical string replacements, build against vendored code. No fork. No separate repository.
+
+```
+rsc/patches/apply.nu:
+  1. Fetch rustc source for pinned stable release
+  2. Inject rs_edition.rs — add Rs variant to Edition enum
+  3. Inject lint passes — register in lint store
+  4. Widen pub(crate) → pub on internal types where lints need access
+  5. Inject diagnostics — error codes and help text
+  6. Result: .vendor/rustc ready to compile
+```
+
+Advantages over forking:
+- Build in minutes (small binary), not hours (full rustc rebuild)
+- New rustc releases: re-run apply.nu against new version
+- Single repo: rsc/ lives alongside core/ and macros/
+- No upstream tracking burden
+
 ## Line Count Breakdown
 
 | Component | Location | Lines | Nature |
 |-----------|----------|------:|--------|
-| `async(dur)` parser extension | rustc fork | 200 | Compiler patch |
-| Bounded async desugaring | rustc fork | 300 | Compiler patch |
-| Register MMIO codegen | rustc fork | 800 | Compiler patch |
-| Rs edition lint: no heap | rustc fork | 200 | Compiler patch |
-| Rs edition lint: no dyn | rustc fork | 50 | Compiler patch |
-| Rs edition lint: no panic-unwind | rustc fork | 50 | Compiler patch |
-| `#[deterministic]` lint pass | rustc fork | 400 | Compiler patch |
-| Bounded async enforcement lint | rustc fork | 200 | Compiler patch |
-| Rs diagnostics and error messages | rustc fork | 300 | Compiler patch |
-| **Compiler patch subtotal** | | **2,500** | |
-| `rs-macros` (all proc-macros) | single proc-macro crate | 4,000 | Standard Rust |
-| `rs` (all library code) | single library crate | 2,550 | Standard Rust |
+| Rs edition lints (7 passes) | rsc/patches/ | 1,200 | Injected lint passes |
+| Rs edition recognition | rsc/patches/ | 100 | Injected edition variant |
+| Rs diagnostics and error messages | rsc/patches/ | 300 | Injected error codes |
+| apply.nu (vendor+patch script) | rsc/patches/ | 400 | Build script |
+| **rsc subtotal** | | **2,000** | |
+| `rs-lang-macros` (all proc-macros) | macros/ (proc-macro crate) | 4,000 | Standard Rust |
+| `rs-lang` (all library code) | core/ (library crate) | 2,550 | Standard Rust |
 | `cyber-hemera` (Particle/Hemera) | external dep (crates.io) | — | Standard Rust |
 | **Crate subtotal** | | **6,550** | |
-| **Total** | | **~9,050** | |
+| **Total** | | **~8,550** | |
 
-The actual rustc patch is ~2,500 lines. Two standard Rust crates (`rs` + `rs-macros`) provide the Phase 1 implementation. Hemera (Poseidon2/Goldilocks hash) is an external dependency (`cyber-hemera` on crates.io).
+Two standard Rust crates (`rs-lang` + `rs-lang-macros`) provide the library and macros. `rsc` is a compiler driver built via vendor+patch. Hemera (Poseidon2/Goldilocks hash) is an external dependency (`cyber-hemera` on crates.io).
+
+## No Parser Change
+
+The `cell!` macro handles `async(dur)` syntax internally (parses its own token stream). Outside cells, `#[bounded_async(dur)]` attribute macro provides the same functionality — valid Rust syntax. No rustc parser modification needed.
 
 ## Build Pipeline
 
 ```bash
-# Rs compiler is a patched rustc
-$ git clone https://github.com/AnyOrganization/rust.git rsc
-$ cd rsc
-$ git apply rs-compiler.patch   # ~2,500 lines
-$ ./x.py build
+# Build rsc (one-time setup)
+$ cd rs/rsc
+$ nu patches/apply.nu          # fetch rustc + inject hooks
+$ cargo build --release        # builds rsc binary
 
-# Compiles any .rs file
+# Use rsc
 $ rsc my_program.rs                    # standard Rust mode
 $ rsc --edition rs my_program.rs       # Rs mode with all checks
 
 # Or via Cargo
 $ cargo +rsc build                     # uses rsc as compiler
 ```
+
+## Dual Enforcement
+
+Proc-macros and compiler lints enforce overlapping rules at different levels:
+
+| Check | Proc-macro (works with rustc) | rsc lint (MIR/HIR level) |
+|-------|-------------------------------|-------------------------|
+| Deterministic: floats, HashMap, rand | Token-level scan | MIR type analysis |
+| Deterministic: transitivity | — | MIR call graph (RS209) |
+| Deterministic: unchecked arithmetic | — | MIR operator analysis (RS206) |
+| Addressed: type restrictions | Token-level reject | MIR transitivity verify |
+| Owned regions (RS501-507) | — | HIR type walk |
+| Bounded async enforcement | Inside `cell!` only | All async fn (RS101) |
+| Epoch context | Inside `cell!` only | Cross-cell enforcement (RS401) |
+
+Code compiled with standard rustc gets proc-macro enforcement. Code compiled with rsc gets both layers. Same RS error codes in both.
 
 ## Compatibility Testing
 

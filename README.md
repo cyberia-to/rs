@@ -4,23 +4,77 @@ icon: "\u2699\uFE0F"
 stake: 2440926101748440
 ---
 
-# Rs: A Strict Superset of Rust for Living Systems
+# Rs: Safer, Faster, Field-First Rust
 
-> *Every .rs file is valid Rs. Rs adds what Rust should have had if it were designed for machines that never reboot.*
+> *Rust treats bytes as machine integers. Rs treats bytes as elements of F_p. This single shift makes determinism, content addressing, and bounded computation natural rather than enforced.*
 
 ---
 
 ## Abstract
 
-Rs is a minimal extension to the Rust programming language that adds seven domain primitives for building operating systems, blockchain nodes, and other long-lived deterministic systems. Rs is implemented as a patch to `rustc` (~4000 lines). Any valid Rust program compiles under Rs without modification. Rs adds compile-time guarantees that Rust cannot express: bounded async deadlines, MMIO safety without unsafe, deterministic computation, content-addressed types, epoch-scoped state, cell-based modularity, and region-based ownership.
+Rs is a minimal, strict superset of Rust for building systems where every byte is a field element. Operating systems, blockchain nodes, and consensus machines share a common requirement: computation must be deterministic, bounded, and verifiable. Rust was designed for systems that manage memory safely. Rs extends Rust for systems that manage *state* safely — where the word is not a machine integer but an element of a finite field, and where correctness means every node in a network produces identical output for identical input.
+
+Rs sits in a specific position within a computational language stack:
+
+```
+ Universe     Language   Type      Algebra            Purpose
+ ─────────────────────────────────────────────────────────────
+ Binary       Bt         Bit       F_2 tower          Circuits
+ Byte         Rs         Word      Bitwise on F_p     Systems
+ Field        Trident    Field     Arithmetic on F_p  Proofs
+```
+
+Bt operates on bits for circuits. Trident operates on field elements for proofs. Rs is the **systems layer** between them — where bytes and words carry the algebraic structure of F_p but serve the practical needs of an operating system: registers, async I/O, state management, and module lifecycle.
+
+Rs is implemented as a patch to `rustc` (~2,450 lines of compiler changes, ~5,400 lines of library code). Any valid Rust program compiles under Rs without modification. Rs adds seven compile-time guarantees that Rust cannot express, each a direct consequence of treating computation as algebraic rather than mechanical.
 
 The file extension is `.rs`. The edition identifier is `rs`. The compiler binary is `rsc`.
 
 ---
 
-## 1. Design Principles
+## 1. Why Rs Exists
 
-### 1.1 Strict Superset
+### 1.1 The Problem with Bytes-as-Integers
+
+Rust, like C before it, treats bytes as machine integers. A `u64` is 64 bits that overflow, wrap, or trap depending on build mode. A `f64` produces different results on different architectures. A `HashMap` iterates in random order. Memory addresses are non-deterministic. This is fine for desktop applications and web servers — systems where "close enough" is acceptable and where a single machine is the trust boundary.
+
+But there is a class of systems where this model breaks:
+
+- **Consensus machines** where N nodes must produce bit-identical output
+- **Operating systems** that never reboot and must hot-swap modules without state loss
+- **Knowledge graphs** where data identity is derived from content, not location
+- **Verifiable systems** where computation must be reproducible and provable
+
+These systems need bytes to behave like elements of a finite field F_p: arithmetic that wraps predictably (mod p), operations that are deterministic by construction, and data structures whose identity is their content hash.
+
+### 1.2 What Changes When Bytes Are Field Elements
+
+When you treat the word as an element of F_p rather than a machine integer, seven consequences follow naturally:
+
+1. **Hardware access becomes typed** — Registers are projections from field elements to bit ranges, not raw pointer dereferences. Safety is algebraic, not manual.
+2. **Async must be bounded** — In a deterministic system, an unbounded wait is not just a bug but a consensus failure. Deadlines are part of the type, not an afterthought.
+3. **Functions can be deterministic by construction** — If your arithmetic is over F_p, you don't need floats, random sources, or platform-dependent behavior. The compiler can verify this.
+4. **Identity comes from content** — In F_p, equal values are identical. Content addressing (hashing to a CID) is the natural identity operation.
+5. **State has temporal scope** — Field elements don't carry hidden history. State that should reset between epochs should be declared as such.
+6. **Modules are algebraic cells** — A module with typed state, bounded interface, and migration rules is a morphism between system states.
+7. **Allocation is bounded** — Field elements live in finite structures. Unbounded heap allocation is an escape from the algebraic model.
+
+Rs doesn't invent these ideas. It makes them expressible in Rust's type system and enforceable by Rust's compiler.
+
+### 1.3 Easier Adoption of Rust
+
+Rs makes Rust easier to adopt for the systems that need it most. Today, writing a deterministic blockchain node in Rust requires hundreds of crate-level conventions, manual discipline around unsafe MMIO, ad-hoc timeout wrappers, and careful avoidance of non-deterministic constructs. Teams reinvent these patterns project by project. Rs captures them once, in the compiler, so that:
+
+- Any Rust programmer can write correct deterministic code without learning project-specific conventions
+- Any LLM trained on Rust can generate valid Rs
+- Any existing no_std crate works unchanged
+- Correctness is verified at compile time, not in code review
+
+---
+
+## 2. Design Principles
+
+### 2.1 Strict Superset
 
 Every valid Rust program is a valid Rs program. This is a hard constraint, not a goal. Compatibility is verified by compiling the top 1000 no_std crates from crates.io with `rsc` on every CI run.
 
@@ -30,7 +84,7 @@ Valid Rust ⊂ Valid Rs
 
 Rs adds constructs. It never changes the meaning of existing Rust constructs.
 
-### 1.2 Edition-Gated Restrictions
+### 2.2 Edition-Gated Restrictions
 
 Rs introduces an `rs` edition. When active, certain Rust features are restricted or enhanced:
 
@@ -45,11 +99,11 @@ In `rs` edition:
 - `dyn Trait` produces a compile error unless opted-in via `#[allow(rs::dynamic_dispatch)]`
 - `panic!()` with unwinding produces a compile error; only `abort` mode is permitted
 - Floating point types (`f32`, `f64`) are forbidden inside `#[deterministic]` functions
-- All `async fn` must have a deadline (see §3)
+- All `async fn` must have a deadline (see §4)
 
 In standard Rust editions (`2021`, `2024`), none of these restrictions apply. Rs extensions are still available but optional.
 
-### 1.3 Zero New Keywords
+### 2.3 Zero New Keywords
 
 Rs introduces zero new keywords. All extensions use:
 - Attributes (`#[register]`, `#[deterministic]`, `#[epoch]`, `#[content_addressed]`)
@@ -60,17 +114,17 @@ This ensures no conflict with any existing or future Rust syntax.
 
 ---
 
-## 2. Typed Registers (MMIO without Unsafe)
+## 3. Typed Registers (MMIO without Unsafe)
 
-### 2.1 Problem
+### 3.1 Problem
 
 Every Rust OS kernel uses `unsafe` for hardware register access. A typical kernel has hundreds to thousands of `unsafe { write_volatile(...) }` blocks scattered across driver code. Each one is a potential source of memory corruption if the address, width, or access pattern is wrong.
 
-### 2.2 Solution
+### 3.2 Solution
 
 Rs introduces the `#[register]` attribute, which declares a memory-mapped I/O register as a typed, compiler-verified construct.
 
-### 2.3 Syntax
+### 3.3 Syntax
 
 ```rust
 #[register(base = 0x23B10_0000, bank_size = 0x1000)]
@@ -124,7 +178,7 @@ mod aic {
 }
 ```
 
-### 2.4 Generated Code
+### 3.4 Generated Code
 
 The compiler generates:
 
@@ -171,7 +225,7 @@ impl aic::Enable {
 // Clear is write-only: no read() or modify() generated
 ```
 
-### 2.5 Compile-Time Guarantees
+### 3.5 Compile-Time Guarantees
 
 | Check | Example Error |
 |-------|--------------|
@@ -183,7 +237,7 @@ impl aic::Enable {
 | Enum variant exceeds field width | `error[RS006]: IrqMode has 3 variants but field mode is 2 bits (max 4)` |
 | Address outside declared bank | `error[RS007]: offset 0x2000 exceeds bank_size 0x1000` |
 
-### 2.6 Usage
+### 3.6 Usage
 
 ```rust
 fn configure_interrupts() {
@@ -206,7 +260,7 @@ fn configure_interrupts() {
 }
 ```
 
-### 2.7 Unsafe Accounting
+### 3.7 Unsafe Accounting
 
 The `unsafe` blocks exist only inside compiler-generated code. They are:
 - Exactly 2 per register (one `read_volatile`, one `write_volatile`)
@@ -216,25 +270,25 @@ The `unsafe` blocks exist only inside compiler-generated code. They are:
 
 User-facing code contains zero `unsafe`.
 
-### 2.8 Fallback Compatibility
+### 3.8 Fallback Compatibility
 
 In standard Rust mode (non-Rs edition), `#[register]` can be implemented as a proc-macro crate that generates the same code. This means Rs register declarations are valid Rust with the right dependency — they just lack the compiler-level verification.
 
 ---
 
-## 3. Bounded Async
+## 4. Bounded Async
 
-### 3.1 Problem
+### 4.1 Problem
 
 Rust's `async fn` creates futures with no deadline. A forgotten `.await` on a network read can block a task forever. In OS kernels and blockchain nodes, this is not a bug — it is a liveness failure that can cost real money (slashing) or crash a system.
 
 Existing workarounds (`tokio::time::timeout()`) are opt-in and forgettable. They are library-level, not language-level.
 
-### 3.2 Solution
+### 4.2 Solution
 
 Rs extends `async` with an optional deadline parameter.
 
-### 3.3 Syntax
+### 4.3 Syntax
 
 ```rust
 // Standard Rust async — still valid, still works
@@ -260,7 +314,7 @@ async(CONSENSUS_TIMEOUT) fn propose_block() -> Result<Block> {
 }
 ```
 
-### 3.4 Semantics
+### 4.4 Semantics
 
 When `async(D) fn foo() -> T` is called:
 
@@ -286,7 +340,7 @@ async(100ms) fn inner() -> Result<Data> {
 
 The effective deadline is `min(own_deadline, caller_remaining)`. Deadlines propagate inward, never expand.
 
-### 3.5 Rs Edition Enforcement
+### 4.5 Rs Edition Enforcement
 
 In `edition = "rs"`:
 
@@ -306,7 +360,7 @@ async fn special_case() -> Result<()> {
 
 In standard Rust editions, `async(duration)` is available but not required.
 
-### 3.6 Compiler Implementation
+### 4.6 Compiler Implementation
 
 The parser recognizes `async ( <expr> )` as a bounded async marker. The desugaring:
 
@@ -330,17 +384,17 @@ Parser changes: ~200 lines. Desugaring: ~300 lines. Diagnostic messages: ~100 li
 
 ---
 
-## 4. Deterministic Functions
+## 5. Deterministic Functions
 
-### 4.1 Problem
+### 5.1 Problem
 
 Blockchain consensus requires that every node produces identical output for identical input. Rust does not guarantee this. Floating point operations can produce different results on different architectures. Integer overflow behavior depends on debug/release mode. Memory layout of structs is unspecified.
 
-### 4.2 Solution
+### 5.2 Solution
 
 The `#[deterministic]` attribute marks functions that must produce identical results on all platforms.
 
-### 4.3 Syntax
+### 5.3 Syntax
 
 ```rust
 #[deterministic]
@@ -353,7 +407,7 @@ fn compute_rank(weights: &[FixedPoint<u128, 18>]) -> FixedPoint<u128, 18> {
 }
 ```
 
-### 4.4 Compile-Time Checks
+### 5.4 Compile-Time Checks
 
 Inside a `#[deterministic]` function, the compiler rejects:
 
@@ -369,7 +423,7 @@ Inside a `#[deterministic]` function, the compiler rejects:
 | Inline assembly | Platform-specific by definition | RS208 |
 | Calling non-`#[deterministic]` functions | Transitivity requirement | RS209 |
 
-### 4.5 What IS Allowed
+### 5.5 What IS Allowed
 
 - `FixedPoint<T, DECIMALS>` (Rs built-in fixed-point type)
 - `checked_add`, `checked_mul`, `checked_sub`, `checked_div`
@@ -380,7 +434,7 @@ Inside a `#[deterministic]` function, the compiler rejects:
 - `const fn` (already deterministic)
 - All comparison and logical operations
 
-### 4.6 Transitivity
+### 5.6 Transitivity
 
 Determinism is contagious upward and required downward:
 
@@ -400,7 +454,7 @@ fn non_det() -> u64 {
 }
 ```
 
-### 4.7 Built-in FixedPoint Type
+### 5.7 Built-in FixedPoint Type
 
 Rs provides a built-in fixed-point numeric type:
 
@@ -420,17 +474,17 @@ Compiler implementation: ~400 lines (lint pass + diagnostics).
 
 ---
 
-## 5. Content-Addressed Types
+## 6. Content-Addressed Types
 
-### 5.1 Problem
+### 6.1 Problem
 
 In content-addressed systems, data is identified by its hash. Producing the hash requires canonical serialization — the same data must always serialize to the same bytes. Rust has no built-in concept of canonical serialization or content-derived identity.
 
-### 5.2 Solution
+### 6.2 Solution
 
 The `#[content_addressed]` derive macro generates canonical serialization and a `.cid()` method.
 
-### 5.3 Syntax
+### 6.3 Syntax
 
 ```rust
 #[derive(ContentAddressed)]
@@ -449,7 +503,7 @@ let link2 = Cyberlink { from: a, to: b, agent: alice, height: 100 };
 assert_eq!(link.cid(), link2.cid());
 ```
 
-### 5.4 Canonical Serialization Rules
+### 6.4 Canonical Serialization Rules
 
 The derived serializer follows strict rules:
 
@@ -462,7 +516,7 @@ The derived serializer follows strict rules:
 
 Hash function: Blake3 (256-bit output, producing a CID).
 
-### 5.5 Compile-Time Checks
+### 6.5 Compile-Time Checks
 
 | Check | Error |
 |-------|-------|
@@ -471,23 +525,23 @@ Hash function: Blake3 (256-bit output, producing a CID).
 | Contains raw pointers | `error[RS303]: pointers cannot be content-addressed` |
 | Contains `HashMap` | `error[RS304]: HashMap has non-deterministic serialization; use BTreeMap` |
 
-### 5.6 Implementation
+### 6.6 Implementation
 
 Implemented as a proc-macro (no compiler changes required). Works in both standard Rust and Rs editions. ~500 lines.
 
 ---
 
-## 6. Epoch-Scoped State
+## 7. Epoch-Scoped State
 
-### 6.1 Problem
+### 7.1 Problem
 
 Long-running systems accumulate state. A variable set in block N might still be non-zero in block N+1000 because someone forgot to clear it. This is a source of non-determinism and state leaks.
 
-### 6.2 Solution
+### 7.2 Solution
 
 The `#[epoch]` attribute marks state that is automatically reset at epoch boundaries.
 
-### 6.3 Syntax
+### 7.3 Syntax
 
 ```rust
 #[epoch]
@@ -504,7 +558,7 @@ fn process_transaction(tx: Transaction) {
 }
 ```
 
-### 6.4 Semantics
+### 7.4 Semantics
 
 The runtime calls `EpochState::reset()` at the beginning of each epoch (block). This is injected by the cell infrastructure, not by user code.
 
@@ -523,7 +577,7 @@ fn __epoch_reset() {
 }
 ```
 
-### 6.5 Compile-Time Checks
+### 7.5 Compile-Time Checks
 
 In `edition = "rs"`, accessing an `#[epoch]` variable outside of an epoch context is an error:
 
@@ -550,17 +604,17 @@ Implementation: ~300 lines (attribute handling + lint pass).
 
 ---
 
-## 7. Cell Declarations
+## 8. Cell Declarations
 
-### 7.1 Problem
+### 8.1 Problem
 
 Operating system modules need: a private state, a public interface, a resource budget, health monitoring, hot-swap capability, and state migration between versions. Rust has none of these as a first-class concept. Crates provide modularity but not lifecycle management.
 
-### 7.2 Solution
+### 8.2 Solution
 
 The `cell!` macro declares a self-contained, hot-swappable OS module.
 
-### 7.3 Syntax
+### 8.3 Syntax
 
 ```rust
 cell! {
@@ -608,7 +662,7 @@ cell! {
 }
 ```
 
-### 7.4 Generated Code
+### 8.4 Generated Code
 
 The `cell!` macro generates:
 
@@ -675,7 +729,7 @@ impl CellMetadata for Consensus {
 }
 ```
 
-### 7.5 Hot-Swap Protocol
+### 8.5 Hot-Swap Protocol
 
 ```
  Epoch N          Epoch N+1        Epoch N+2
@@ -702,17 +756,17 @@ Implementation: proc-macro, ~2000 lines.
 
 ---
 
-## 8. Owned Regions
+## 9. Owned Regions
 
-### 8.1 Problem
+### 9.1 Problem
 
 Rust's borrow checker is designed for complex ownership graphs: multiple references with different lifetimes, interior mutability, self-referential structs. This complexity exists to support general-purpose programming. An OS kernel for a blockchain node doesn't need most of it.
 
-### 8.2 Solution
+### 9.2 Solution
 
 In `edition = "rs"`, the compiler enforces a simpler ownership model through lints. This is not a language change — it's a restriction.
 
-### 8.3 Restrictions
+### 9.3 Restrictions
 
 ```rust
 #![edition = "rs"]
@@ -747,7 +801,7 @@ let bv: BoundedVec<u8, 256> = BoundedVec::new();        // bounded, no heap
 let s: ArrayString<64> = ArrayString::from("hello");     // fixed-capacity string
 ```
 
-### 8.4 Arena Allocator
+### 9.4 Arena Allocator
 
 Rs provides a built-in arena type for cases where dynamic-count-but-bounded allocation is needed:
 
@@ -763,7 +817,7 @@ let tx: &mut Transaction = arena.alloc(Transaction::default())?;
 // No fragmentation, no use-after-free, no leaks
 ```
 
-### 8.5 Explicit Opt-In
+### 9.5 Explicit Opt-In
 
 For interfacing with existing Rust crates that use heap allocation:
 
@@ -779,9 +833,9 @@ Implementation: ~500 lines (lint pass checking for specific type paths).
 
 ---
 
-## 9. Rs Standard Library Extensions
+## 10. Rs Standard Library Extensions
 
-### 9.1 `rs::fixed_point`
+### 10.1 `rs::fixed_point`
 
 ```rust
 use rs::fixed_point::FixedPoint;
@@ -797,7 +851,7 @@ let d = a.checked_div(b).unwrap();    // 31.847...
 // All deterministic, all return Option (no panics)
 ```
 
-### 9.2 `rs::bounded`
+### 10.2 `rs::bounded`
 
 ```rust
 use rs::bounded::{BoundedVec, BoundedMap, ArrayString};
@@ -811,7 +865,7 @@ m.try_insert(k, v)?;  // Returns Err if full
 let s: ArrayString<64> = ArrayString::try_from("hello")?;
 ```
 
-### 9.3 `rs::channel`
+### 10.3 `rs::channel`
 
 ```rust
 use rs::channel::{bounded_channel, Sender, Receiver};
@@ -829,7 +883,7 @@ match tx.try_send(transaction) {
 let msg = rx.recv().await;  // Inherits caller's deadline
 ```
 
-### 9.4 `rs::cid`
+### 10.4 `rs::cid`
 
 ```rust
 use rs::cid::Cid;
@@ -841,7 +895,7 @@ let cid = Cid::from_bytes(data);  // Blake3 hash
 let map: BoundedMap<Cid, Data, 10_000> = BoundedMap::new();
 ```
 
-### 9.5 `rs::arena`
+### 10.5 `rs::arena`
 
 ```rust
 use rs::arena::Arena;
@@ -858,9 +912,9 @@ for item in arena.iter() { /* ... */ }
 
 ---
 
-## 10. Compiler Implementation Plan
+## 11. Compiler Implementation Plan
 
-### 10.1 Architecture
+### 11.1 Architecture
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -933,7 +987,7 @@ for item in arena.iter() { /* ... */ }
 └──────────────────────────────────────────────┘
 ```
 
-### 10.2 Line Count Breakdown
+### 11.2 Line Count Breakdown
 
 | Component | Location | Lines | Nature |
 |-----------|----------|------:|--------|
@@ -960,7 +1014,7 @@ for item in arena.iter() { /* ... */ }
 
 The actual rustc patch is ~2,450 lines. Everything else is standard Rust crates that work with both `rsc` and `rustc`.
 
-### 10.3 Build Pipeline
+### 11.3 Build Pipeline
 
 ```bash
 # Rs compiler is a patched rustc
@@ -977,7 +1031,7 @@ $ rsc --edition rs my_program.rs       # Rs mode with all checks
 $ cargo +rsc build                     # uses rsc as compiler
 ```
 
-### 10.4 Compatibility Testing
+### 11.4 Compatibility Testing
 
 CI runs three test suites:
 
@@ -987,7 +1041,7 @@ CI runs three test suites:
 
 ---
 
-## 11. Migration Path
+## 12. Migration Path
 
 ### Phase 1: Library-Only (works today)
 
@@ -1024,7 +1078,7 @@ Features that are too domain-specific remain in the Rs fork.
 
 ---
 
-## 12. Example: Complete CyberOS Cell in Rs
+## 13. Example: Complete CyberOS Cell in Rs
 
 ```rust
 #![edition = "rs"]
@@ -1161,9 +1215,9 @@ This file:
 
 ---
 
-## 13. Summary
+## 14. Summary
 
-Rs is not a new language. It is Rust with seven additions for building systems that never reboot:
+Rs is not a new language. It is Rust with seven additions for systems where every byte is a field element:
 
 | # | Primitive | Compiler Change | Library | Key Guarantee |
 |---|-----------|:-:|:-:|---|
@@ -1182,4 +1236,4 @@ File extension: **`.rs`**.
 
 Any Rust programmer can write Rs. Any LLM trained on Rust can generate Rs. Any no_std crate works with Rs. The ecosystem is not forked — it is extended.
 
-Rs is what Rust becomes when you optimize for machines that participate in collective intelligence rather than machines that run desktop applications.
+Rust made systems programming safe. Rs makes it algebraic. When the word is a field element, determinism is not a discipline — it is the default.

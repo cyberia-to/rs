@@ -16,7 +16,7 @@ red() { printf "\033[31m%s\033[0m\n" "$1"; }
 echo "=== compile-pass ==="
 for f in "$TESTS_DIR"/compile-pass/*.rs; do
     name=$(basename "$f" .rs)
-    if $RSC "$f" -o /tmp/rsc_test_out -C panic=abort 2>/dev/null; then
+    if $RSC --rs-edition "$f" -o /tmp/rsc_test_out -C panic=abort 2>/dev/null; then
         green "  PASS: $name"
         PASS=$((PASS + 1))
     else
@@ -38,7 +38,7 @@ for f in "$TESTS_DIR"/ui/*.rs; do
     fi
 
     # Run rsc, capture stderr
-    stderr=$($RSC "$f" -o /tmp/rsc_test_out $flags 2>&1 || true)
+    stderr=$($RSC --rs-edition "$f" -o /tmp/rsc_test_out $flags 2>&1 || true)
 
     # Extract expected error code from filename (e.g., rs501_box -> RS501)
     code=$(echo "$name" | sed 's/^rs\([0-9]*\).*/RS\1/' | tr '[:lower:]' '[:upper:]')

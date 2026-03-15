@@ -1,8 +1,8 @@
 # Rs Implementation Plan
 
-## Implementation Strategy
+## Strategy
 
-Phase 1 first: everything as standard Rust crates. This follows the migration.md plan and lets cyb os development start immediately.
+Three parallel tracks developed simultaneously. No sequential phasing — library, macros, and compiler driver are independent work streams that converge at integration testing. Vendor+patch technique (proven in Trisha) avoids forking rustc.
 
 ### Repository Structure
 
@@ -14,10 +14,20 @@ rs/
 ├── macros/                 rs-lang-macros on crates.io — addressed, epoch, deterministic,
 │   ├── Cargo.toml                                        registers, cell
 │   └── src/
+├── rsc/                    compiler driver (vendor+patch, not a fork)
+│   ├── patches/
+│   │   ├── apply.nu        — fetch rustc + inject hooks (à la Trisha)
+│   │   ├── rs_edition.rs   — edition recognition
+│   │   ├── rs_lints.rs     — lint passes (RS001-RS507)
+│   │   └── rs_diag.rs      — error messages
+│   ├── .vendor/            — fetched + patched rustc (gitignored)
+│   ├── src/
+│   │   └── main.rs         — rsc binary entry point
+│   └── Cargo.toml
 ├── tests/                  integration tests
 ├── reference/              (existing — spec)
 ├── docs/                   (existing — documentation)
-├── Cargo.toml              workspace manifest
+├── Cargo.toml              workspace manifest (core + macros; rsc builds separately)
 ├── CLAUDE.md
 └── README.md
 ```
@@ -32,9 +42,12 @@ rs-lang (library crate, directory: core/)
 rs-lang-macros (proc-macro crate, directory: macros/)
 ├── syn, quote, proc-macro2 (build deps)
 └── rs-lang                 (runtime dep — types used in generated code)
-```
 
-Two crates. `rs-lang` is the library (types + data structures). `rs-lang-macros` is the single proc-macro crate (all 5 macros). User depends on `rs-lang` which re-exports macros from `rs-lang-macros`.
+rsc (compiler driver, directory: rsc/)
+├── .vendor/rustc           (fetched + patched at build time, not forked)
+├── rs-lang                 (path dep for test suite)
+└── rs-lang-macros          (path dep for test suite)
+```
 
 User-facing API:
 ```rust
@@ -43,9 +56,9 @@ use rs_lang::prelude::*;    // Rust converts hyphens to underscores
 
 ---
 
-## Phase 1: Library Implementation
+## Track A: Library (core/)
 
-### rs-lang (library crate, ~2550 lines, directory: core/)
+### rs-lang (library crate, ~2550 lines)
 
 All library code lives in one crate, organized as modules.
 
@@ -53,9 +66,11 @@ All library code lives in one crate, organized as modules.
 core/src/
   lib.rs          — re-exports, prelude (~100 lines)
   core.rs         — Address, Particle, Timeout, traits (~150 lines)
-  fixed_point.rs  — FixedPoint<T, DECIMALS> (~400 lines)
   fixed_point/
-    ops.rs        — checked/saturating/wrapping ops (~400 lines)
+    mod.rs        — struct definition, constructors, constants, re-exports (~200 lines)
+    ops.rs        — checked/saturating/wrapping arithmetic (~400 lines)
+    fmt.rs        — Display, Debug implementations (~100 lines)
+    convert.rs    — From impls, from_integer, from_decimal (~100 lines)
   bounded.rs      — BoundedVec, BoundedMap, ArrayString (~600 lines)
   arena.rs        — Arena<T, N> (~400 lines)
   channel.rs      — bounded MPMC channel (~500 lines)
@@ -67,7 +82,7 @@ core/src/
   - type Address = [u8; 32]
   - type Particle = hemera::Hash        // re-export from cyber-hemera
   - trait EpochReset { fn reset(&mut self); }
-  - trait CanonicalSerialize { fn serialize_canonical(&self, buf: &mut Vec<u8>); }
+  - trait CanonicalSerialize { fn serialize_canonical<W: Write>(&self, w: &mut W); }
   - trait Cell { const NAME, VERSION, BUDGET, HEARTBEAT; fn current_epoch(); fn health_check(); fn reset_epoch_state(); }
   - trait MigrateFrom<T> { fn migrate(old: T) -> Self; }
   - struct FunctionSignature { name, args, ret, deadline }
@@ -75,7 +90,14 @@ core/src/
   - struct Timeout                      // returned when bounded async exceeds deadline
 ```
 
+`CanonicalSerialize` uses a generic writer (`W: Write`) to avoid heap allocation. Callers pass a `BoundedVec<u8, N>` (which implements `Write`) or a `&mut [u8]` cursor. No `Vec<u8>` dependency.
+
 External dependency: `cyber-hemera` (crates.io). Otherwise `core`/`no_std` only.
+
+Re-export paths:
+- `rs_lang::Particle` (from `core.rs`, alias for `hemera::Hash`)
+- `rs_lang::particle::Particle` (module re-export for `rs::particle` stdlib compat)
+- `rs_lang::Address`
 
 #### fixed_point module (~800 lines)
 
@@ -100,7 +122,9 @@ Key: `checked_mul` for FixedPoint requires widening multiplication (u128 * u128 
   array_string.rs — ArrayString<const N: usize>, ~100 lines
 ```
 
-`BoundedVec`: stack-allocated array + length counter. `try_push`, `try_insert`, `pop`, `iter`, `len`, `clear`.
+`BoundedVec`: fixed-capacity collection, no growth after construction. `try_push`, `try_insert`, `pop`, `iter`, `len`, `clear`.
+
+Storage model: for small N (fits on stack), uses `[MaybeUninit<T>; N]` inline. For large N (cell state maps with millions of entries), the containing struct is heap-allocated once at cell creation — the BoundedVec itself is fixed-capacity and never grows. The "no heap" rule (RS502) targets growable allocations (`Vec::push` can realloc), not fixed-capacity containers allocated once.
 
 `BoundedMap`: sorted `BoundedVec<(K, V), N>` with binary search. `try_insert`, `get`, `remove`, `iter`, `entry`, `contains_key`.
 
@@ -121,18 +145,22 @@ One tricky part: `alloc` takes `&self` but returns `&mut T`. This requires inter
 #### channel module (~500 lines)
 
 ```
-  - fn bounded_channel<T>(cap: usize) -> (Sender<T>, Receiver<T>)
+  - fn bounded_channel<T, const N: usize>() -> (Sender<T, N>, Receiver<T, N>)
   - Sender::try_send(T) -> Result<(), Full<T>>
   - Receiver::try_recv() -> Option<T>
   - Receiver::recv() async -> T  (polls try_recv, respects caller deadline)
   - Based on ring buffer with atomic head/tail
 ```
 
-**Estimate for rs-lang crate:** 4 sessions.
+Channel capacity is a const generic (`N`), consistent with the compile-time bounds philosophy. The cell runtime connects typed, sized channels between cells at initialization.
+
+**Estimate:** 4 sessions.
 
 ---
 
-### rs-lang-macros (proc-macro crate, ~4000 lines, directory: macros/)
+## Track B: Proc-macros (macros/)
+
+### rs-lang-macros (proc-macro crate, ~4000 lines)
 
 All proc-macros in one crate. Mirrors serde's pattern (serde + serde_derive).
 
@@ -193,9 +221,9 @@ Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-lang`.
     - std::time::Instant → error
     - unsafe blocks → error (conservative)
     - inline asm → error
-  - Cannot check (Phase 2 compiler-enforced):
-    - Transitivity (calling non-deterministic functions)
-    - Unchecked arithmetic operators
+  - Partial enforcement only — rsc adds:
+    - RS206: unchecked arithmetic (MIR-level)
+    - RS209: transitivity (MIR call graph)
 ```
 
 #### registers (~800 lines)
@@ -245,87 +273,224 @@ Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-lang`.
 
 This is the largest and most complex piece. The macro is essentially a DSL parser + code generator.
 
-**Estimate for rs-lang-macros crate:** 8 sessions.
+`async(Duration)` syntax works inside the `cell!` macro (which parses its own token stream). Outside cells, use `#[bounded_async(dur)]` attribute macro — valid Rust syntax, handled by rs-lang-macros. No parser change needed.
+
+**Estimate:** 8 sessions.
 
 ---
 
-### Tests
+## Track C: Compiler Driver (rsc/)
 
-#### Unit tests (in each module)
+### Vendor+Patch Architecture
 
-Each module has `#[cfg(test)] mod tests` with:
-- Property tests for arithmetic (fixed_point)
-- Edge cases: 0, 1, MAX, overflow
-- Serialization round-trip tests (addressed)
-- Bitfield pack/unpack round-trips (registers)
-- Channel concurrency tests
-- Arena fill-and-drop tests
-
-#### Integration tests (~500 lines)
+Same technique as Trisha (~/git/trisha): fetch upstream, inject hooks via surgical string replacements, build against vendored source. No fork, no separate repo.
 
 ```
-tests/
-  tutorial_cyb_cell.rs  — the tutorial example compiles and runs
-  all_primitives.rs     — each primitive used independently
-  migration.rs          — cell v0 → v1 migration works
-  deterministic.rs      — #[deterministic] rejects float usage
-  bounded_async.rs      — timeout wrapper works
+rsc/patches/apply.nu:
+  1. Fetch rustc source for pinned stable release from crates.io registry
+  2. Inject rs_edition.rs — add Rs variant to Edition enum
+  3. Inject rs_lints.rs — register 7 lint passes in lint store
+  4. Widen pub(crate) → pub on internal types where lint passes need access
+  5. Inject rs_diag.rs — error code definitions and help text
+  6. Result: .vendor/rustc ready to compile
 ```
 
-**Estimate for all tests:** 2 sessions.
+### Lint Passes (~1200 lines)
+
+All lint passes are regular Rust source files in `rsc/patches/`, injected into rustc at build time.
+
+**rs_no_heap.rs (~200 lines)** — RS501, RS502, RS503, RS505, RS507
+```
+  - Walk HIR type nodes
+  - Flag: Box<T>, Vec<T>, String, Arc<T>, Rc<T>, HashMap<K,V>, HashSet<T>
+  - Allow with #[allow(rs::heap)]
+  - Allow in #[cfg(test)] blocks
+```
+
+**rs_no_dyn.rs (~50 lines)** — RS504
+```
+  - Walk HIR for dyn Trait types
+  - Flag: Box<dyn T>, &dyn T
+  - Allow with #[allow(rs::dyn_dispatch)]
+```
+
+**rs_no_panic_unwind.rs (~50 lines)** — RS506
+```
+  - Check crate panic strategy
+  - Flag if panic = "unwind" in rs edition
+  - Require panic = "abort"
+```
+
+**rs_deterministic.rs (~300 lines)** — RS201-RS209 (full enforcement)
+```
+  - Walk MIR for #[deterministic] functions
+  - Additions over proc-macro:
+    - RS206: flag unchecked arithmetic operators (+, -, * without checked_/saturating_/wrapping_)
+    - RS209: transitivity — every callee must also be #[deterministic] or const fn
+  - Uses MIR call graph, not token scanning
+```
+
+**rs_bounded_async.rs (~200 lines)** — RS101
+```
+  - Walk all async fn declarations in rs edition
+  - Flag async fn without deadline (must use #[bounded_async(dur)] or be inside cell!)
+  - Allow with #[allow(rs::unbounded_async)]
+```
+
+**rs_epoch.rs (~100 lines)** — RS401
+```
+  - Flag #[epoch] state accessed outside cell context in rs edition
+```
+
+**rs_addressed.rs (~100 lines)** — RS301-RS304
+```
+  - Verify CanonicalSerialize transitivity at MIR level
+  - Catches cases the proc-macro misses (type aliases, indirect usage)
+```
+
+### Edition Recognition (~100 lines)
+
+```
+  - Add Rs variant to Edition enum in rustc_span
+  - Register "rs" as valid edition string
+  - Gate all Rs-specific lints behind edition = "rs" check
+  - Standard edition (2021, 2024) behavior unchanged
+```
+
+### Diagnostics (~300 lines)
+
+```
+  - Error code definitions: RS001-RS008, RS101, RS201-RS209, RS301-RS304, RS401, RS501-RS507
+  - Long-form explanations for each (rsc --explain RS201)
+  - Suggestions: "use checked_add instead of +" for RS206
+  - Help notes linking to Rs documentation
+```
+
+### Build Pipeline
+
+```bash
+# Build rsc (one-time setup)
+$ cd rs/rsc
+$ nu patches/apply.nu          # fetch rustc + inject hooks
+$ cargo build --release        # builds rsc binary
+
+# Use rsc
+$ rsc my_program.rs                    # standard Rust mode
+$ rsc --edition rs my_program.rs       # Rs mode with all checks
+$ cargo +rsc build                     # uses rsc as compiler
+```
+
+No `git clone` of rust-lang/rust. No `./x.py build` taking hours. The vendor script fetches what's needed and injects hooks. Build time: minutes.
+
+**Estimate:** 5 sessions.
 
 ---
 
-## Phase 1 Summary
+## Parallel Schedule
 
-| Component | Lines | Sessions |
-|-----------|------:|:--------:|
-| rs-lang (library: core + bounded + arena + channel + fixed_point) | 2,550 | 4 |
-| rs-lang-macros (addressed + epoch + deterministic + registers + cell) | 4,000 | 8 |
-| tests | 500 | 2 |
-| **Total** | **~7,050** | **~14** |
+```
+Session:  1    2    3    4    5    6    7    8    9   10   11   12
+Track A: [core][bnd][fp ][ar+ch]
+Track B:       [addr][epo][det][reg][reg][cel][cel][cel]
+Track C: [scaf][easy lints][async][deterministic ][diag]
+Tests:                                              [int][int]
+```
 
-14 sessions = ~42 focused hours.
+Track A (core/) starts first — core module provides types everything depends on.
+Track B (macros/) starts session 2 — needs core types.
+Track C (rsc/) starts session 1 — lint passes don't depend on rs-lang types. Simple lints (no_heap, no_dyn, no_panic) can ship immediately.
+Tests start session 10 — after all three tracks have enough to integrate.
+
+### Summary
+
+| Track | Component | Lines | Sessions |
+|-------|-----------|------:|:--------:|
+| A | rs-lang (core + bounded + fixed_point + arena + channel) | 2,550 | 4 |
+| B | rs-lang-macros (addressed + epoch + deterministic + registers + cell) | 4,000 | 8 |
+| C | rsc (lint passes + edition + diagnostics + build pipeline) | 2,000 | 5 |
+| — | Integration tests | 500 | 2 |
+| | **Total** | **~9,050** | **12** (parallel) |
+
+12 sessions = ~36 focused hours. Down from 22 (14 + 8) in the old sequential two-phase model.
 
 **External dependency:** `cyber-hemera` v0.2.0 (crates.io) provides Hemera hash (Poseidon2/Goldilocks sponge). `Particle` is a type alias for `hemera::Hash` (64 bytes).
 
-**Parallelization:** The two crates can be developed in parallel by two agents (one on core/, one on macros/). Within each crate, modules are independent files.
+**Parallelization:** Three tracks, three directory scopes (core/, macros/, rsc/). No file overlap. Matches the parallel agent pattern.
 
 ---
 
-## Implementation Order
+## Enforcement Timeline
 
-1. **core: core module** — traits and types everything depends on
-2. **core: bounded** — used everywhere (cell state, channels)
-3. **core: fixed_point** — used in deterministic functions
-4. **core: arena** — standalone
-5. **core: channel** — standalone
-6. **macros: addressed** — simplest macro, validates the macro setup
-7. **macros: epoch** — simple, needed conceptually by cell
-8. **macros: deterministic** — simple, partial enforcement
-9. **macros: registers** — complex, independent
-10. **macros: cell** — largest, uses everything
-11. **tests** — integration tests after both crates exist
+Enforcement arrives incrementally, not as a big-bang Phase 2:
+
+| Session | What ships |
+|---------|-----------|
+| 1 | core types (Address, Particle, Timeout, traits) |
+| 2 | BoundedVec/BoundedMap/ArrayString + rsc scaffold + `#[derive(Addressed)]` |
+| 3 | rs_no_heap, rs_no_dyn, rs_no_panic_unwind lints active in rsc |
+| 4 | FixedPoint + `#[epoch]` + rs_bounded_async lint |
+| 5 | Arena + Channel + `#[deterministic]` (proc-macro level) |
+| 6-7 | `#[register]` + rs_deterministic lint (MIR-level, transitivity) |
+| 8-9 | `cell!` macro |
+| 10 | Diagnostics + full rsc error messages |
+| 11-12 | Integration tests, full compatibility verification |
+
+By session 3, developers already get compiler warnings for heap usage, dyn dispatch, and panic-unwind in rs edition code.
 
 ---
 
-## Phase 2: Compiler Patch (future)
+## Design Decisions
 
-Not part of this implementation round. Documented here for completeness.
+### No rustc fork
 
-**Source:** Fork the official `rust-lang/rust` repo at a stable release. The compiler binary is `rsc`. See `reference/compiler.md` for full architecture.
+Vendor+patch technique (proven in Trisha). Fetch upstream rustc source, inject lint passes via surgical string replacements in `apply.nu`. Benefits:
+- No upstream tracking burden
+- Build in minutes (small binary), not hours (full rustc)
+- Automatic access to new rustc releases — just re-run apply.nu against new version
+- Single repo: rsc/ lives alongside core/ and macros/
 
-After Phase 1 is stable and cyb os is running on library implementations:
+### No `async(dur)` parser change
 
-1. Fork rustc at a stable release
-2. Add `rs` edition recognition
-3. Parser extension for `async(<duration>)` syntax
-4. Lint passes: no-heap, no-dyn, no-panic-unwind, deterministic transitivity, bounded async enforcement
-5. Register MMIO codegen (compiler-verified version of registers macro)
-6. Full rustc test suite + top 1000 no_std crates CI
-7. Rs-specific test suite
+The `cell!` macro handles `async(dur)` syntax internally (parses its own token stream). Outside cells, `#[bounded_async(dur)]` attribute macro provides the same functionality — valid Rust syntax, no parser modification needed. This eliminates the only feature that would have required modifying rustc's parser.
 
-Estimated: ~2,500 lines of compiler patches. 4-6 sessions.
+### Proc-macro + compiler lint coexistence
+
+The proc-macros (Track B) and compiler lints (Track C) enforce overlapping rules at different levels:
+- Proc-macro: token-level checks, works with standard rustc
+- Compiler lint: MIR/HIR-level checks, stronger guarantees, requires rsc
+
+Code compiled with standard rustc gets proc-macro enforcement only. Code compiled with rsc gets both layers. The proc-macros use the same RS error codes as the compiler lints — consistent developer experience.
+
+#### Enforcement by primitive
+
+| Primitive | rustc + rs-lang-macros | rsc (compiler driver) |
+|-----------|----------------------|----------------------|
+| Typed registers | `#[register]` proc-macro: full validation + codegen | Same (proc-macro handles it) |
+| Bounded async | Timeout wrapping inside `cell!`; `#[bounded_async(dur)]` outside | RS101: all async fn must have deadline in rs edition |
+| Deterministic functions | `#[deterministic]` proc-macro: floats, HashMap, rand, unsafe, asm | + RS206: unchecked arithmetic, RS209: transitivity (MIR-level) |
+| Addressed types | `#[derive(Addressed)]`: full serialization + hashing | + RS301-304: MIR-level transitivity verification |
+| Epoch-scoped state | `#[epoch]` attribute macro: full reset generation | + RS401: cross-cell context enforcement |
+| Cell declarations | `cell!` proc-macro: full code generation | Same (proc-macro handles it) |
+| Owned regions | Conventions only | RS501-507: heap, Vec, String, dyn, Arc/Rc, panic, HashMap/HashSet |
+
+cyb os development starts immediately using standard Rust with Rs libraries. Enforcement tightens incrementally as rsc lint passes land.
+
+### Lint allow-attributes use `rs::` prefix
+
+`#[allow(rs::heap)]`, `#[allow(rs::dyn_dispatch)]`, `#[allow(rs::unbounded_async)]`. Proc-macros recognize and pass through these attributes so code written for standard rustc compiles unchanged with rsc.
+
+### Error codes are stable
+
+RS001-RS507 defined in the spec. Both proc-macros and compiler lints emit the same codes.
+
+### Upstream (future)
+
+Propose individual Rs features as Rust RFCs where appropriate:
+- `#[deterministic]` has general value beyond cyb os
+- Bounded async could benefit any reliability-critical Rust code
+- Typed registers would benefit the entire embedded Rust ecosystem
+
+Features that are too domain-specific remain in rsc.
 
 ---
 

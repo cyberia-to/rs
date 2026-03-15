@@ -1,0 +1,10 @@
+[package]
+name = "rsc"
+version = "0.1.0"
+edition = "2021"
+description = "Rs compiler driver — rustc with Rs edition lints"
+publish = false
+
+[[bin]]
+name = "rsc"
+path = "src/main.rs"

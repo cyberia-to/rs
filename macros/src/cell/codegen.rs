@@ -17,6 +17,7 @@ pub fn generate(cell: &CellDef) -> Result<TokenStream> {
     let cell_trait_impl = gen_cell_trait_impl(cell);
     let migrate_impl = gen_migrate_impl(cell);
     let error_enum = gen_error_enum(cell);
+    let error_aliases = gen_error_aliases(cell);
     let metadata_impl = gen_metadata_impl(cell);
     let methods_impl = gen_methods_impl(cell);
     let channel_types = gen_channel_types(cell);
@@ -28,6 +29,7 @@ pub fn generate(cell: &CellDef) -> Result<TokenStream> {
         #cell_trait_impl
         #migrate_impl
         #error_enum
+        #error_aliases
         #metadata_impl
         #methods_impl
         #channel_types
@@ -56,6 +58,7 @@ fn gen_step_state_struct(cell: &CellDef) -> TokenStream {
     let step_name = format_ident!("{}StepState", cell.name);
     if cell.step_state_fields.is_empty() {
         return quote! {
+            #[step]
             pub struct #step_name;
             impl rs_lang::StepReset for #step_name {
                 fn reset(&mut self) {}
@@ -110,11 +113,43 @@ fn gen_wrapper_struct(cell: &CellDef) -> TokenStream {
     let name = &cell.name;
     let state_name = format_ident!("{}State", cell.name);
     let step_name = format_ident!("{}StepState", cell.name);
+    let state_field_inits: Vec<TokenStream> = cell
+        .state_fields
+        .iter()
+        .map(|f| {
+            let fname = &f.name;
+            quote! { #fname: Default::default(), }
+        })
+        .collect();
+    let step_field_inits: Vec<TokenStream> = cell
+        .step_state_fields
+        .iter()
+        .map(|f| {
+            let fname = &f.name;
+            quote! { #fname: Default::default(), }
+        })
+        .collect();
+    let step_init = if cell.step_state_fields.is_empty() {
+        quote! { #step_name }
+    } else {
+        quote! { #step_name { #(#step_field_inits)* } }
+    };
     quote! {
         pub struct #name {
             state: #state_name,
             step_state: #step_name,
             __step: u64,
+        }
+
+        impl #name {
+            /// Create a new cell instance with default state.
+            pub fn new() -> Self {
+                Self {
+                    state: #state_name { #(#state_field_inits)* },
+                    step_state: #step_init,
+                    __step: 0,
+                }
+            }
         }
     }
 }
@@ -202,6 +237,17 @@ fn gen_error_enum(cell: &CellDef) -> TokenStream {
             #(#variant_idents,)*
         }
         #timeout_impl
+    }
+}
+
+fn gen_error_aliases(cell: &CellDef) -> TokenStream {
+    let error_name = format_ident!("{}Error", cell.name);
+    quote! {
+        /// Inside cell methods, `Error::Variant` resolves to `{CellName}Error::Variant`.
+        type Error = #error_name;
+        /// Inside cell methods, `Result<T>` resolves to `Result<T, {CellName}Error>`.
+        #[allow(dead_code)]
+        type Result<T> = core::result::Result<T, #error_name>;
     }
 }
 

@@ -23,6 +23,9 @@ dependencies = [
 [[package]]
 name = "rs-lang"
 version = "0.1.0"
+dependencies = [
+ "rs-lang-macros",
+]
 
 [[package]]
 name = "rs-lang-macros"

@@ -5,7 +5,9 @@ edition = "2021"
 description = "Rs standard library — types, bounded collections, fixed-point, arena, channels"
 
 [dependencies]
+rs-lang-macros = { path = "../macros", optional = true }
 
 [features]
 default = []
 std = []
+macros = ["rs-lang-macros"]

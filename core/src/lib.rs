@@ -8,10 +8,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
-#[cfg(feature = "std")]
-extern crate alloc;
-
-#[cfg(test)]
+#[cfg(any(feature = "std", test))]
 extern crate alloc;
 
 pub mod core_types;
@@ -19,6 +16,13 @@ pub mod fixed_point;
 pub mod bounded;
 pub mod arena;
 pub mod channel;
+pub mod runtime;
+
+// Re-export proc-macros when the `macros` feature is enabled.
+// This follows the serde pattern: users depend on `rs-lang = { features = ["macros"] }`
+// and get both the runtime types and proc-macros through a single crate.
+#[cfg(feature = "macros")]
+pub use rs_lang_macros::*;
 
 // Re-export core types at crate root for ergonomic access.
 pub use core_types::{

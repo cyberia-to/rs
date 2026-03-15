@@ -27,6 +27,7 @@ use syn::parse::{Parse, ParseStream};
 pub struct CellDef {
     pub name: Ident,
     pub version: u32,
+    pub version_span: Span,
     pub budget: Expr,
     pub heartbeat: Expr,
     pub state_fields: Vec<CellField>,
@@ -98,13 +99,15 @@ pub struct ChannelDef {
 // ---------------------------------------------------------------------------
 
 pub fn parse_cell(input: TokenStream) -> Result<CellDef> {
-    syn::parse2(input)
+    let cell: CellDef = syn::parse2(input)?;
+    validate(&cell)?;
+    Ok(cell)
 }
 
 impl Parse for CellDef {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut name: Option<Ident> = None;
-        let mut version: Option<u32> = None;
+        let mut version: Option<(u32, Span)> = None;
         let mut budget: Option<Expr> = None;
         let mut heartbeat: Option<Expr> = None;
         let mut state_fields: Vec<CellField> = Vec::new();
@@ -148,7 +151,8 @@ impl Parse for CellDef {
                 "version" => {
                     input.parse::<Token![:]>()?;
                     let lit: syn::LitInt = input.parse()?;
-                    version = Some(lit.base10_parse()?);
+                    let span = lit.span();
+                    version = Some((lit.base10_parse()?, span));
                     input.parse::<Token![,]>()?;
                 }
                 "budget" => {
@@ -198,10 +202,13 @@ impl Parse for CellDef {
             }
         }
 
+        let (ver, ver_span) = version
+            .ok_or_else(|| Error::new(Span::call_site(), "missing `version` in cell!"))?;
+
         Ok(CellDef {
             name: name.ok_or_else(|| Error::new(Span::call_site(), "missing `name` in cell!"))?,
-            version: version
-                .ok_or_else(|| Error::new(Span::call_site(), "missing `version` in cell!"))?,
+            version: ver,
+            version_span: ver_span,
             budget: budget
                 .ok_or_else(|| Error::new(Span::call_site(), "missing `budget` in cell!"))?,
             heartbeat: heartbeat
@@ -377,4 +384,91 @@ fn parse_migrate_source(input: ParseStream) -> Result<MigrateSource> {
     // Otherwise, parse as a full path.
     let path: syn::Path = input.parse()?;
     Ok(MigrateSource::Path(path))
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+fn validate(cell: &CellDef) -> Result<()> {
+    // 1. Version must be > 0.
+    if cell.version == 0 {
+        return Err(Error::new(cell.version_span, "version must be > 0"));
+    }
+
+    // 2. Unique state field names.
+    check_unique_fields(&cell.state_fields, "state")?;
+
+    // 3. Unique step_state field names.
+    check_unique_fields(&cell.step_state_fields, "step_state")?;
+
+    // 4. Unique method names.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for m in &cell.methods {
+            let name_str = m.name.to_string();
+            if !seen.insert(name_str.clone()) {
+                return Err(Error::new(
+                    m.name.span(),
+                    format!("duplicate method name `{}`", name_str),
+                ));
+            }
+        }
+    }
+
+    // 5. Migration field coverage — every migration field must exist in state.
+    if let Some(ref mig) = cell.migrate {
+        let state_names: std::collections::HashSet<String> =
+            cell.state_fields.iter().map(|f| f.name.to_string()).collect();
+        for fm in &mig.field_mappings {
+            let name_str = fm.name.to_string();
+            if !state_names.contains(&name_str) {
+                return Err(Error::new(
+                    fm.name.span(),
+                    format!("migration references unknown field `{}`", name_str),
+                ));
+            }
+        }
+    }
+
+    // 6. No f32/f64 in state or step_state fields.
+    for field in cell.state_fields.iter().chain(cell.step_state_fields.iter()) {
+        if is_forbidden_float(&field.ty) {
+            return Err(Error::new(
+                field.name.span(),
+                "f32/f64 forbidden in cell state \u{2014} use FixedPoint (RS302)",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn check_unique_fields(fields: &[CellField], block_name: &str) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for f in fields {
+        let name_str = f.name.to_string();
+        if !seen.insert(name_str.clone()) {
+            return Err(Error::new(
+                f.name.span(),
+                format!("duplicate {} field `{}`", block_name, name_str),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Returns true if the outermost type is `f32` or `f64`.
+fn is_forbidden_float(ty: &Type) -> bool {
+    match ty {
+        Type::Path(tp) => {
+            if let Some(seg) = tp.path.segments.last() {
+                let name = seg.ident.to_string();
+                name == "f32" || name == "f64"
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
 }

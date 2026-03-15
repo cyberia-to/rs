@@ -105,21 +105,7 @@ fn derive_struct(input: &DeriveInput) -> Result<TokenStream> {
         impl #impl_generics #name #ty_generics #where_clause {
             /// Compute the content-address (Particle) of this value.
             pub fn particle(&self) -> rs_lang::Particle {
-                let size = rs_lang::CanonicalSerialize::serialized_size(self);
-                let mut buf = ::alloc::vec![0u8; size];
-
-                struct SliceBufMut<'a>(&'a mut [u8], usize);
-                impl<'a> rs_lang::BufMut for SliceBufMut<'a> {
-                    fn put_bytes(&mut self, bytes: &[u8]) {
-                        let end = self.1 + bytes.len();
-                        self.0[self.1..end].copy_from_slice(bytes);
-                        self.1 = end;
-                    }
-                }
-
-                let mut writer = SliceBufMut(&mut buf, 0);
-                rs_lang::CanonicalSerialize::serialize_canonical(self, &mut writer);
-                rs_lang::Particle::from_bytes(&buf)
+                rs_lang::Particle::from_canonical(self)
             }
         }
     })
@@ -194,21 +180,7 @@ fn derive_enum(input: &DeriveInput) -> Result<TokenStream> {
 
         impl #impl_generics #name #ty_generics #where_clause {
             pub fn particle(&self) -> rs_lang::Particle {
-                let size = rs_lang::CanonicalSerialize::serialized_size(self);
-                let mut buf = ::alloc::vec![0u8; size];
-
-                struct SliceBufMut<'a>(&'a mut [u8], usize);
-                impl<'a> rs_lang::BufMut for SliceBufMut<'a> {
-                    fn put_bytes(&mut self, bytes: &[u8]) {
-                        let end = self.1 + bytes.len();
-                        self.0[self.1..end].copy_from_slice(bytes);
-                        self.1 = end;
-                    }
-                }
-
-                let mut writer = SliceBufMut(&mut buf, 0);
-                rs_lang::CanonicalSerialize::serialize_canonical(self, &mut writer);
-                rs_lang::Particle::from_bytes(&buf)
+                rs_lang::Particle::from_canonical(self)
             }
         }
     })

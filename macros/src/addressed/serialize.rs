@@ -73,9 +73,9 @@ pub fn serialize_field_expr(ty: &Type, accessor: &TokenStream) -> TokenStream {
         _ => {
             if let Type::Array(arr) = ty {
                 let elem_ty = &*arr.elem;
-                let elem_serialize = serialize_field_expr(elem_ty, &quote! { elem });
+                let elem_serialize = serialize_field_expr(elem_ty, &quote! { (*__elem) });
                 return quote! {
-                    for elem in (#accessor).iter() {
+                    for __elem in (#accessor).iter() {
                         #elem_serialize
                     }
                 };
@@ -138,11 +138,11 @@ pub fn serialized_size_expr(ty: &Type, accessor: &TokenStream) -> TokenStream {
         _ => {
             if let Type::Array(arr) = ty {
                 let elem_ty = &*arr.elem;
-                let elem_size = serialized_size_expr(elem_ty, &quote! { elem });
+                let elem_size = serialized_size_expr(elem_ty, &quote! { (*__elem) });
                 return quote! {
                     {
                         let mut __sz = 0usize;
-                        for elem in (#accessor).iter() {
+                        for __elem in (#accessor).iter() {
                             __sz += #elem_size;
                         }
                         __sz

@@ -5,7 +5,7 @@
 //! metadata, methods, and channel type aliases.
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, ToTokens};
 use syn::{Ident, Result, ReturnType, Type};
 
 use super::parse::{CellDef, CellField, CellMethod, MethodVis, MigrateSource, SelfArg};
@@ -58,7 +58,6 @@ fn gen_step_state_struct(cell: &CellDef) -> TokenStream {
     let step_name = format_ident!("{}StepState", cell.name);
     if cell.step_state_fields.is_empty() {
         return quote! {
-            #[step]
             pub struct #step_name;
             impl rs_lang::StepReset for #step_name {
                 fn reset(&mut self) {}
@@ -240,15 +239,14 @@ fn gen_error_enum(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn gen_error_aliases(cell: &CellDef) -> TokenStream {
-    let error_name = format_ident!("{}Error", cell.name);
-    quote! {
-        /// Inside cell methods, `Error::Variant` resolves to `{CellName}Error::Variant`.
-        type Error = #error_name;
-        /// Inside cell methods, `Result<T>` resolves to `Result<T, {CellName}Error>`.
-        #[allow(dead_code)]
-        type Result<T> = core::result::Result<T, #error_name>;
-    }
+fn gen_error_aliases(_cell: &CellDef) -> TokenStream {
+    // The spec says `Error::Variant` resolves to `{CellName}Error::Variant`
+    // inside cell methods. This is achieved by rewriting `Error` references
+    // in the method token stream to `{CellName}Error` during codegen.
+    //
+    // Token-stream rewriting happens in gen_single_method — the error enum
+    // name is substituted wherever `Error` appears in a path position.
+    TokenStream::new()
 }
 
 fn collect_error_variants(cell: &CellDef) -> Vec<String> {
@@ -353,7 +351,7 @@ fn gen_methods_impl(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn gen_single_method(method: &CellMethod, _error_name: &Ident) -> TokenStream {
+fn gen_single_method(method: &CellMethod, error_name: &Ident) -> TokenStream {
     let vis = match method.vis {
         MethodVis::Public => quote! { pub },
         MethodVis::Private => quote! {},
@@ -374,8 +372,8 @@ fn gen_single_method(method: &CellMethod, _error_name: &Ident) -> TokenStream {
             quote! { #name: #ty }
         })
         .collect();
-    let ret = &method.ret;
-    let body = &method.body;
+    let ret = rewrite_error_ident(&method.ret.to_token_stream(), error_name);
+    let body = rewrite_error_ident(&method.body, error_name);
     if method.is_async {
         if let Some(deadline) = &method.deadline {
             quote! {
@@ -422,4 +420,77 @@ fn extract_type_name(ty: &Type) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Rewrite cell-specific names in a token stream.
+///
+/// - `Error` → `{CellName}Error` (in any position)
+/// - `Result<T>` → `core::result::Result<T, {CellName}Error>` (1-arg Result)
+fn rewrite_error_ident(stream: &TokenStream, error_name: &Ident) -> TokenStream {
+    use proc_macro2::TokenTree;
+    let mut out = TokenStream::new();
+    let tokens: Vec<TokenTree> = stream.clone().into_iter().collect();
+    let len = tokens.len();
+    let mut i = 0;
+    while i < len {
+        match &tokens[i] {
+            TokenTree::Ident(ident) if ident == "Error" => {
+                out.extend(quote! { #error_name });
+            }
+            TokenTree::Ident(ident) if ident == "Result" => {
+                // Check if followed by `<T>` (angle-bracket group).
+                // proc_macro2 doesn't parse `<T>` as a group, so Result<T>
+                // appears as: Ident("Result") Punct('<') ... Punct('>').
+                // We rewrite the entire sequence.
+                if i + 1 < len {
+                    if let TokenTree::Punct(p) = &tokens[i + 1] {
+                        if p.as_char() == '<' {
+                            // Collect tokens until matching '>'
+                            let mut depth = 1;
+                            let mut inner_tokens = TokenStream::new();
+                            let mut j = i + 2;
+                            while j < len && depth > 0 {
+                                match &tokens[j] {
+                                    TokenTree::Punct(p) if p.as_char() == '<' => {
+                                        depth += 1;
+                                        inner_tokens.extend(core::iter::once(tokens[j].clone()));
+                                    }
+                                    TokenTree::Punct(p) if p.as_char() == '>' => {
+                                        depth -= 1;
+                                        if depth > 0 {
+                                            inner_tokens.extend(core::iter::once(tokens[j].clone()));
+                                        }
+                                    }
+                                    other => {
+                                        inner_tokens.extend(core::iter::once(other.clone()));
+                                    }
+                                }
+                                j += 1;
+                            }
+                            let rewritten_inner = rewrite_error_ident(&inner_tokens, error_name);
+                            out.extend(quote! {
+                                core::result::Result<#rewritten_inner, #error_name>
+                            });
+                            i = j;
+                            continue;
+                        }
+                    }
+                }
+                // Bare `Result` without angle brackets — pass through
+                out.extend(core::iter::once(tokens[i].clone()));
+            }
+            TokenTree::Group(group) => {
+                let rewritten = rewrite_error_ident(&group.stream(), error_name);
+                let mut new_group =
+                    proc_macro2::Group::new(group.delimiter(), rewritten);
+                new_group.set_span(group.span());
+                out.extend(core::iter::once(TokenTree::Group(new_group)));
+            }
+            other => {
+                out.extend(core::iter::once(other.clone()));
+            }
+        }
+        i += 1;
+    }
+    out
 }

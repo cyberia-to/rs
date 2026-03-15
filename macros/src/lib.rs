@@ -26,9 +26,16 @@ pub fn derive_addressed(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Attribute macro that generates `StepReset` impl for a struct.
+/// Attribute macro that generates `StepReset` impl for a struct or a
+/// reset function for a static item.
 ///
-/// Resets all fields to their zero/empty values at step boundaries.
+/// On structs: generates `impl StepReset` that resets all fields to
+/// their zero/empty values at step boundaries.
+///
+/// On statics: emits the static unchanged and generates a hidden
+/// `unsafe fn __rs_step_reset_<name>()` that resets the value.
+/// Atomics use `store(0, SeqCst)`; other types re-assign the
+/// original initializer.
 #[proc_macro_attribute]
 pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
     step::expand(attr.into(), item.into())

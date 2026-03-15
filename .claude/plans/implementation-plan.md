@@ -471,7 +471,7 @@ Code compiled with standard rustc gets proc-macro enforcement only. Code compile
 | Addressed types | `#[derive(Addressed)]`: full serialization + hashing | + RS301-304: MIR-level transitivity verification |
 | Step-scoped state | `#[step]` attribute macro: full reset generation | + RS401: cross-cell context enforcement |
 | Cell declarations | `cell!` proc-macro: full code generation | Same (proc-macro handles it) |
-| Owned regions | Conventions only | RS501-507: heap, Vec, String, dyn, Arc/Rc, panic, HashMap/HashSet |
+| Edition restrictions | Conventions only | RS501-507: heap, Vec, String, dyn, Arc/Rc, panic, HashMap/HashSet |
 
 cyb os development starts immediately using standard Rust with Rs libraries. Enforcement tightens incrementally as rsc lint passes land.
 

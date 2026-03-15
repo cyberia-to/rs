@@ -13,7 +13,7 @@ tags: cyber, rs, reference
 | [Deterministic](errors/deterministic.md) | RS201–RS209 | 9 | [deterministic.md](deterministic.md) | proc-macro (partial) + rsc lint (full) |
 | [Addressed](errors/addressed.md) | RS301–RS304 | 4 | [addressed.md](addressed.md) | proc-macro + rsc lint |
 | [Step](errors/step.md) | RS401 | 1 | [step.md](step.md) | rsc lint |
-| [Regions](errors/regions.md) | RS501–RS507 | 7 | [regions.md](regions.md) | rsc lint |
+| [Restrictions](errors/restrictions.md) | RS501–RS507 | 7 | [restrictions.md](restrictions.md) | rsc lint |
 
 ## Code Ranges
 
@@ -23,7 +23,7 @@ RS1xx — Bounded async (deadline enforcement)
 RS2xx — Deterministic functions (purity checks)
 RS3xx — Addressed types (canonical serialization)
 RS4xx — Step-scoped state (context enforcement)
-RS5xx — Owned regions (allocation restrictions)
+RS5xx — Edition restrictions (allocation, dispatch, control flow)
 ```
 
 ## Enforcement Levels

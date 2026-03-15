@@ -141,7 +141,7 @@ Proc-macros and compiler lints enforce overlapping rules at different levels:
 | Deterministic: transitivity | — | MIR call graph (RS209) |
 | Deterministic: unchecked arithmetic | — | MIR operator analysis (RS206) |
 | Addressed: type restrictions | Token-level reject | MIR transitivity verify |
-| Owned regions (RS501-507) | — | HIR type walk |
+| Edition restrictions (RS501-507) | — | HIR type walk |
 | Bounded async enforcement | Inside `cell!` only | All async fn (RS101) |
 | Step context | Inside `cell!` only | Cross-cell enforcement (RS401) |
 

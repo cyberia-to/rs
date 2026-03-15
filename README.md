@@ -30,7 +30,7 @@ The file extension is `.rs`. The edition identifier is `rs`. The compiler binary
 | 4 | [Addressed Types](reference/addressed.md) | — | 500L | Identity from content |
 | 5 | [Step State](reference/step.md) | — | 300L | No state leaks |
 | 6 | [Cells](reference/cells.md) | — | 2000L | Hot-swap + lifecycle |
-| 7 | [Owned Regions](reference/regions.md) | 400L | — | No heap, no leaks |
+| 7 | [Edition Restrictions](reference/restrictions.md) | 400L | — | No heap, no leaks |
 
 Compiler patch: **~2,500 lines**. Library code: **~5,900 lines**. Rust compatibility: **100%**.
 

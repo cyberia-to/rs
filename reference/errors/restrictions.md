@@ -2,9 +2,9 @@
 tags: cyber, rs, reference
 ---
 
-# Region Errors (RS501–RS507)
+# Restriction Errors (RS501–RS507)
 
-[Back to Error Catalog](../errors.md) | Spec: [regions.md](../regions.md)
+[Back to Error Catalog](../errors.md) | Spec: [restrictions.md](../restrictions.md)
 
 Enforcement: rsc lint (rs edition only). Opt-out: `#[allow(rs::heap)]`.
 

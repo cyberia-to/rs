@@ -2,7 +2,7 @@
 tags: cyber, rs, reference
 ---
 
-# Owned Regions
+# Edition Restrictions
 
 ## Problem
 
@@ -98,4 +98,4 @@ Implementation: ~400 lines (lint passes: no-heap ~200L, no-dyn ~50L, no-panic-un
 
 ## Error Reference
 
-See [errors/regions.md](errors/regions.md) for detailed descriptions of RS501–RS507.
+See [errors/restrictions.md](errors/restrictions.md) for detailed descriptions of RS501–RS507.

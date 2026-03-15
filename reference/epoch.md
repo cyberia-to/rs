@@ -4,9 +4,20 @@ tags: cyber, rs, reference
 
 # Epoch-Scoped State
 
+## Definition
+
+An epoch is a discrete, sequential interval identified by a monotonically increasing `u64`. Rs defines the epoch contract — the interface between a cell and its runtime:
+
+- `current_epoch() -> u64` — returns the current epoch number
+- `reset_epoch_state()` — called by the runtime at the boundary between epoch N and epoch N+1
+
+Rs enforces: epoch state is only accessed within cell context (RS401), and `#[epoch]` generates correct reset implementations.
+
+Rs does not define: what triggers epoch transitions, how long an epoch lasts, or how epochs relate to external events (blocks, time intervals, signals). The runtime provides the epoch driver.
+
 ## Problem
 
-Long-running systems accumulate state. A variable set in block N might still be non-zero in block N+1000 because someone forgot to clear it. This is a source of non-determinism and state leaks.
+Long-running systems accumulate state. A variable set in epoch N might still be non-zero in epoch N+1000 because someone forgot to clear it. This is a source of non-determinism and state leaks.
 
 ## Solution
 
@@ -31,7 +42,7 @@ fn process_transaction(tx: Transaction) {
 
 ## Semantics
 
-The runtime calls `EpochState::reset()` at the beginning of each epoch (block). This is injected by the cell infrastructure, not by user code.
+The runtime calls `EpochState::reset()` at the beginning of each epoch. This is injected by the cell infrastructure, not by user code.
 
 ### On statics
 

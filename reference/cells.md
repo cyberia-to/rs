@@ -4,6 +4,26 @@ tags: cyber, rs, reference
 
 # Cell Declarations
 
+## Compiler vs Runtime Boundary
+
+Rs is a compiler. It defines the *shape* of a cell and enforces structural correctness at compile time. The runtime consumes cell declarations and provides lifecycle management.
+
+**Rs enforces (compile time):**
+- State and epoch_state structs are well-formed
+- Migration implementations type-check against previous version
+- Epoch state resets are generated correctly
+- Public interface is introspectable via `CellMetadata`
+- Bounded async deadlines are present on async methods
+
+**Rs declares (consumed by runtime):**
+- `budget` — resource limit per cell; the runtime enforces it
+- `heartbeat` — liveness interval; the runtime monitors it
+- `health_check()` — the runtime calls it; the cell implements it
+- Channel connections — the runtime wires them at initialization
+- Hot-swap protocol — the runtime drives epoch boundaries and triggers migration
+
+Rs validates that these declarations are syntactically and type-correct. The runtime decides what to do with them.
+
 ## Problem
 
 Operating system modules need: a private state, a public interface, a resource budget, health monitoring, hot-swap capability, and state migration between versions. Rust has none of these as a first-class concept. Crates provide modularity but not lifecycle management.
@@ -27,7 +47,7 @@ cell! {
         votes: BoundedVec<Vote, MAX_VALIDATORS>,
     }
 
-    // Epoch-scoped state (auto-reset each block)
+    // Epoch-scoped state (auto-reset each epoch)
     epoch_state {
         round_votes: BoundedVec<Vote, MAX_VALIDATORS>,
         proposed_block: Option<Block>,

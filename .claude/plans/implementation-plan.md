@@ -8,13 +8,15 @@ Phase 1 first: everything as standard Rust crates. This follows the migration.md
 
 ```
 rs/
+├── core/                   rs-lang on crates.io — types, bounded, arena, channel, fixed_point
+│   ├── Cargo.toml
+│   └── src/
+├── macros/                 rs-lang-macros on crates.io — addressed, epoch, deterministic,
+│   ├── Cargo.toml                                        registers, cell
+│   └── src/
+├── tests/                  integration tests
 ├── reference/              (existing — spec)
 ├── docs/                   (existing — documentation)
-├── crates/
-│   ├── rs/                 library: types, bounded, arena, channel, fixed_point
-│   └── rs-macros/          proc-macro: addressed, epoch, deterministic,
-│                           registers, cell (all macros in one crate)
-├── tests/                  integration tests
 ├── Cargo.toml              workspace manifest
 ├── CLAUDE.md
 └── README.md
@@ -23,27 +25,32 @@ rs/
 ### Dependency Graph
 
 ```
-rs (library crate)
+rs-lang (library crate, directory: core/)
 ├── cyber-hemera            (external dep — Hemera hash)
 └── (no other external deps)
 
-rs-macros (proc-macro crate)
+rs-lang-macros (proc-macro crate, directory: macros/)
 ├── syn, quote, proc-macro2 (build deps)
-└── rs                      (runtime dep — types used in generated code)
+└── rs-lang                 (runtime dep — types used in generated code)
 ```
 
-Two crates. `rs` is the library (types + data structures). `rs-macros` is the single proc-macro crate (all 5 macros). User depends on `rs` which re-exports macros from `rs-macros`.
+Two crates. `rs-lang` is the library (types + data structures). `rs-lang-macros` is the single proc-macro crate (all 5 macros). User depends on `rs-lang` which re-exports macros from `rs-lang-macros`.
+
+User-facing API:
+```rust
+use rs_lang::prelude::*;    // Rust converts hyphens to underscores
+```
 
 ---
 
 ## Phase 1: Library Implementation
 
-### rs (library crate, ~2550 lines)
+### rs-lang (library crate, ~2550 lines, directory: core/)
 
 All library code lives in one crate, organized as modules.
 
 ```
-crates/rs/src/
+core/src/
   lib.rs          — re-exports, prelude (~100 lines)
   core.rs         — Address, Particle, Timeout, traits (~150 lines)
   fixed_point.rs  — FixedPoint<T, DECIMALS> (~400 lines)
@@ -121,16 +128,16 @@ One tricky part: `alloc` takes `&self` but returns `&mut T`. This requires inter
   - Based on ring buffer with atomic head/tail
 ```
 
-**Estimate for rs crate:** 4 sessions.
+**Estimate for rs-lang crate:** 4 sessions.
 
 ---
 
-### rs-macros (proc-macro crate, ~4000 lines)
+### rs-lang-macros (proc-macro crate, ~4000 lines, directory: macros/)
 
 All proc-macros in one crate. Mirrors serde's pattern (serde + serde_derive).
 
 ```
-crates/rs-macros/src/
+macros/src/
   lib.rs          — proc-macro entry points (~50 lines)
   addressed.rs    — #[derive(Addressed)] (~500 lines)
   epoch.rs        — #[epoch] attribute (~300 lines)
@@ -139,7 +146,7 @@ crates/rs-macros/src/
   cell.rs         — cell! {} macro (~2000 lines)
 ```
 
-Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs`.
+Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs-lang`.
 
 #### addressed (~500 lines)
 
@@ -238,7 +245,7 @@ Dependencies: `syn`, `quote`, `proc-macro2`. Runtime dep: `rs`.
 
 This is the largest and most complex piece. The macro is essentially a DSL parser + code generator.
 
-**Estimate for rs-macros crate:** 8 sessions.
+**Estimate for rs-lang-macros crate:** 8 sessions.
 
 ---
 
@@ -273,8 +280,8 @@ tests/
 
 | Component | Lines | Sessions |
 |-----------|------:|:--------:|
-| rs (library: core + bounded + arena + channel + fixed_point) | 2,550 | 4 |
-| rs-macros (addressed + epoch + deterministic + registers + cell) | 4,000 | 8 |
+| rs-lang (library: core + bounded + arena + channel + fixed_point) | 2,550 | 4 |
+| rs-lang-macros (addressed + epoch + deterministic + registers + cell) | 4,000 | 8 |
 | tests | 500 | 2 |
 | **Total** | **~7,050** | **~14** |
 
@@ -282,22 +289,22 @@ tests/
 
 **External dependency:** `cyber-hemera` v0.2.0 (crates.io) provides Hemera hash (Poseidon2/Goldilocks sponge). `Particle` is a type alias for `hemera::Hash` (64 bytes).
 
-**Parallelization:** The two crates can be developed in parallel by two agents (one on crates/rs/, one on crates/rs-macros/). Within each crate, modules are independent files.
+**Parallelization:** The two crates can be developed in parallel by two agents (one on core/, one on macros/). Within each crate, modules are independent files.
 
 ---
 
 ## Implementation Order
 
-1. **rs: core module** — traits and types everything depends on
-2. **rs: bounded** — used everywhere (cell state, channels)
-3. **rs: fixed_point** — used in deterministic functions
-4. **rs: arena** — standalone
-5. **rs: channel** — standalone
-6. **rs-macros: addressed** — simplest macro, validates the macro setup
-7. **rs-macros: epoch** — simple, needed conceptually by cell
-8. **rs-macros: deterministic** — simple, partial enforcement
-9. **rs-macros: registers** — complex, independent
-10. **rs-macros: cell** — largest, uses everything
+1. **core: core module** — traits and types everything depends on
+2. **core: bounded** — used everywhere (cell state, channels)
+3. **core: fixed_point** — used in deterministic functions
+4. **core: arena** — standalone
+5. **core: channel** — standalone
+6. **macros: addressed** — simplest macro, validates the macro setup
+7. **macros: epoch** — simple, needed conceptually by cell
+8. **macros: deterministic** — simple, partial enforcement
+9. **macros: registers** — complex, independent
+10. **macros: cell** — largest, uses everything
 11. **tests** — integration tests after both crates exist
 
 ---
@@ -305,6 +312,8 @@ tests/
 ## Phase 2: Compiler Patch (future)
 
 Not part of this implementation round. Documented here for completeness.
+
+**Source:** Fork the official `rust-lang/rust` repo at a stable release. The compiler binary is `rsc`. See `reference/compiler.md` for full architecture.
 
 After Phase 1 is stable and cyb os is running on library implementations:
 
@@ -314,7 +323,7 @@ After Phase 1 is stable and cyb os is running on library implementations:
 4. Lint passes: no-heap, no-dyn, no-panic-unwind, deterministic transitivity, bounded async enforcement
 5. Register MMIO codegen (compiler-verified version of registers macro)
 6. Full rustc test suite + top 1000 no_std crates CI
-8. Rs-specific test suite
+7. Rs-specific test suite
 
 Estimated: ~2,500 lines of compiler patches. 4-6 sessions.
 

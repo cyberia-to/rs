@@ -10,3 +10,5 @@ name = "rsc"
 path = "src/main.rs"
 
 [dependencies]
+mir-format = { path = "../mir-format" }
+serde_json = "1"

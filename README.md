@@ -1,7 +1,6 @@
 ---
 tags: cyber, rs, rust, language, research
 icon: "\u2699\uFE0F"
-stake: 2440926101748440
 ---
 
 # Rs: Safer, Faster, Field-First Rust

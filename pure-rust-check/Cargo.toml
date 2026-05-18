@@ -1,0 +1,9 @@
+[package]
+name = "pure-rust-check"
+version = "0.1.0"
+edition = "2021"
+description = "Audit tool: scans build artifacts for non-Rust inputs"
+
+[[bin]]
+name = "pure-rust-check"
+path = "src/main.rs"

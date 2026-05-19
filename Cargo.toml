@@ -1,4 +1,4 @@
 [workspace]
-members = ["core", "macros", "mir-format", "tests/macro-integration", "pure-rust-check"]
-exclude = ["rsc"]
+members = ["core", "macros", "mir-format", "tests/macro-integration", "pure-rust-check", "link", "macho-linker"]
+exclude = ["rsc", "codegen"]
 resolver = "2"

@@ -1,0 +1,13 @@
+[package]
+name = "link"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust Mach-O executable emitter for arm64 macOS"
+
+[lib]
+name = "link"
+path = "src/lib.rs"
+
+[[bin]]
+name = "link"
+path = "src/main.rs"

@@ -1,0 +1,13 @@
+[package]
+name = "macho-linker"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust Mach-O multi-object linker for arm64 macOS"
+
+[[bin]]
+name = "macho-linker"
+path = "src/main.rs"
+
+[dependencies]
+object = { version = "0.36", features = ["read", "write"] }
+link = { path = "../link" }

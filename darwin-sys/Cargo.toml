@@ -1,0 +1,15 @@
+[package]
+name    = "darwin-sys"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+alloc   = []   # enables Box-based closures in thread::spawn
+
+[lib]
+name = "darwin_sys"
+
+# No external dependencies — pure FFI to libSystem.dylib.
+# libSystem is the macOS vendor OS runtime; linking it is no different from
+# issuing raw syscalls on Linux.  It is not build-time tooling.

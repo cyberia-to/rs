@@ -1,0 +1,12 @@
+[package]
+name = "codegen"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust rustc codegen backend — MIR → Trident LIR → ARM64 → Mach-O"
+
+[lib]
+name = "codegen"
+crate-type = ["dylib"]
+
+[dependencies]
+link = { path = "../link" }

@@ -225,8 +225,17 @@ impl Ctx {
             LIROp::AtomicLoad{dst,ptr}|LIROp::AtomicStore{src:dst,ptr} => vec![*dst,*ptr],
             LIROp::AtomicXchg{dst,src,ptr}
             |LIROp::AtomicFetchAdd{dst,delta:src,ptr}
-            |LIROp::AtomicFetchSub{dst,delta:src,ptr} => vec![*dst,*src,*ptr],
+            |LIROp::AtomicFetchSub{dst,delta:src,ptr}
+            |LIROp::AtomicFetchAnd{dst,val:src,ptr}
+            |LIROp::AtomicFetchOr{dst,val:src,ptr}
+            |LIROp::AtomicFetchXor{dst,val:src,ptr}
+            |LIROp::AtomicFetchNand{dst,val:src,ptr}
+            |LIROp::AtomicFetchMax{dst,val:src,ptr}
+            |LIROp::AtomicFetchMin{dst,val:src,ptr}
+            |LIROp::AtomicFetchUMax{dst,val:src,ptr}
+            |LIROp::AtomicFetchUMin{dst,val:src,ptr} => vec![*dst,*src,*ptr],
             LIROp::AtomicCas{old,new,ptr,ok} => vec![*old,*new,*ptr,*ok],
+            LIROp::Fence => vec![],
             LIROp::Branch{cond,..} => vec![*cond],
             LIROp::CallIndirect(r) => vec![*r],
             _ => vec![],
@@ -565,8 +574,35 @@ impl Ctx {
                 LIROp::AtomicFetchSub { dst, delta, ptr } => {
                     self.emit_atomic_fetch_binop(*dst, *delta, *ptr, false);
                 }
+                LIROp::AtomicFetchAnd  { dst, val, ptr } => {
+                    self.emit_atomic_fetch_bitop(*dst, *val, *ptr, BitOp::And);
+                }
+                LIROp::AtomicFetchOr   { dst, val, ptr } => {
+                    self.emit_atomic_fetch_bitop(*dst, *val, *ptr, BitOp::Or);
+                }
+                LIROp::AtomicFetchXor  { dst, val, ptr } => {
+                    self.emit_atomic_fetch_bitop(*dst, *val, *ptr, BitOp::Xor);
+                }
+                LIROp::AtomicFetchNand { dst, val, ptr } => {
+                    self.emit_atomic_fetch_bitop(*dst, *val, *ptr, BitOp::Nand);
+                }
+                LIROp::AtomicFetchMax  { dst, val, ptr } => {
+                    self.emit_atomic_fetch_minmax(*dst, *val, *ptr, 12); // GT (signed >)
+                }
+                LIROp::AtomicFetchMin  { dst, val, ptr } => {
+                    self.emit_atomic_fetch_minmax(*dst, *val, *ptr, 11); // LT (signed <)
+                }
+                LIROp::AtomicFetchUMax { dst, val, ptr } => {
+                    self.emit_atomic_fetch_minmax(*dst, *val, *ptr, 8);  // HI (unsigned >)
+                }
+                LIROp::AtomicFetchUMin { dst, val, ptr } => {
+                    self.emit_atomic_fetch_minmax(*dst, *val, *ptr, 3);  // CC (unsigned <)
+                }
                 LIROp::AtomicCas { old, new, ptr, ok } => {
                     self.emit_atomic_cas(*old, *new, *ptr, *ok);
+                }
+                LIROp::Fence => {
+                    self.emit(enc::dmb_ish());
                 }
 
                 // ── Passthrough ──────────────────────────────────────
@@ -743,6 +779,57 @@ impl Ctx {
 
         self.commit_write(ok);
     }
+
+    // AtomicFetchAnd/Or/Xor/Nand: dst = *ptr; *ptr = dst OP val  (returns old)
+    fn emit_atomic_fetch_bitop(&mut self, dst: Reg, val: Reg, ptr: Reg, op: BitOp) {
+        let pp   = self.r_read(ptr);
+        let pval = self.r_read(val);
+        let pd   = self.r_write(dst);
+        let retry_off = self.offset();
+        self.emit(enc::ldaxr(pd, pp));
+        match op {
+            BitOp::And  => self.emit(enc::and(SCRATCH1, pd, pval)),
+            BitOp::Or   => self.emit(enc::orr(SCRATCH1, pd, pval)),
+            BitOp::Xor  => self.emit(enc::eor(SCRATCH1, pd, pval)),
+            BitOp::Nand => {
+                self.emit(enc::and(SCRATCH1, pd, pval));
+                self.emit(enc::mvn(SCRATCH1, SCRATCH1));
+            }
+        }
+        self.emit(enc::stlxr(SCRATCH0, SCRATCH1, pp));
+        let patch_off = self.offset();
+        self.patches.push((patch_off, format!("__abop_{patch_off}"), PatchKind::B19));
+        self.emit(0xB5000000 | (SCRATCH0 as u32));
+        self.labels.insert(format!("__abop_{patch_off}"), retry_off);
+        self.commit_write(dst);
+    }
+
+    // AtomicFetchMax/Min/UMax/UMin: dst = *ptr; *ptr = select(dst, val, cond)  (returns old)
+    // cond: GT=12 (smax), LT=11 (smin), HI=8 (umax), CC=3 (umin)
+    fn emit_atomic_fetch_minmax(&mut self, dst: Reg, val: Reg, ptr: Reg, cond: u8) {
+        let pp   = self.r_read(ptr);
+        let pval = self.r_read(val);
+        let pd   = self.r_write(dst);
+        let retry_off = self.offset();
+        self.emit(enc::ldaxr(pd, pp));
+        self.emit(enc::cmp(pd, pval));
+        self.emit(enc::csel(SCRATCH1, pd, pval, cond));
+        self.emit(enc::stlxr(SCRATCH0, SCRATCH1, pp));
+        let patch_off = self.offset();
+        self.patches.push((patch_off, format!("__aminmax_{patch_off}"), PatchKind::B19));
+        self.emit(0xB5000000 | (SCRATCH0 as u32));
+        self.labels.insert(format!("__aminmax_{patch_off}"), retry_off);
+        self.commit_write(dst);
+    }
+}
+
+enum BitOp { And, Or, Xor, Nand }
+
+fn parse_xreg(s: &str) -> Option<u8> {
+    let s = s.trim().trim_end_matches(',');
+    if let Some(n) = s.strip_prefix('x') {
+        n.parse::<u8>().ok().filter(|&r| r < 32)
+    } else if s == "sp" { Some(31) } else { None }
 }
 
 fn assemble_line(line: &str) -> Option<u32> {
@@ -762,5 +849,44 @@ fn assemble_line(line: &str) -> Option<u32> {
     if let Some(rest) = line.strip_prefix("brk #") {
         return rest.trim().parse().ok().map(enc::brk);
     }
+
+    // Three-register instructions: mnemonic xd, xn, xm
+    let parse3 = |rest: &str| -> Option<(u8, u8, u8)> {
+        let mut it = rest.splitn(3, ',');
+        let rd = parse_xreg(it.next()?)?;
+        let rn = parse_xreg(it.next()?)?;
+        let rm = parse_xreg(it.next()?.trim())?;
+        Some((rd, rn, rm))
+    };
+
+    if let Some(rest) = line.strip_prefix("add ") {
+        if let Some((d, n, m)) = parse3(rest) { return Some(enc::add(d, n, m)); }
+    }
+    if let Some(rest) = line.strip_prefix("sub ") {
+        if let Some((d, n, m)) = parse3(rest) { return Some(enc::sub(d, n, m)); }
+    }
+    if let Some(rest) = line.strip_prefix("mul ") {
+        if let Some((d, n, m)) = parse3(rest) { return Some(enc::mul(d, n, m)); }
+    }
+    if let Some(rest) = line.strip_prefix("and ") {
+        if let Some((d, n, m)) = parse3(rest) { return Some(enc::and(d, n, m)); }
+    }
+    if let Some(rest) = line.strip_prefix("orr ") {
+        if let Some((d, n, m)) = parse3(rest) { return Some(enc::orr(d, n, m)); }
+    }
+    if let Some(rest) = line.strip_prefix("eor ") {
+        if let Some((d, n, m)) = parse3(rest) { return Some(enc::eor(d, n, m)); }
+    }
+
+    // Two-register mov: mov xd, xn
+    if let Some(rest) = line.strip_prefix("mov ") {
+        let mut it = rest.splitn(2, ',');
+        if let (Some(d_s), Some(n_s)) = (it.next(), it.next()) {
+            if let (Some(d), Some(n)) = (parse_xreg(d_s), parse_xreg(n_s)) {
+                return Some(enc::mov_reg(d, n));
+            }
+        }
+    }
+
     None
 }

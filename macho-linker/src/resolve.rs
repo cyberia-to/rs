@@ -42,10 +42,10 @@ pub fn resolve(
     let mut table: HashMap<String, GlobalSym> = HashMap::new();
     let mut undefined: Vec<String> = Vec::new();
 
-    // Pass 1: collect all defined global symbols.
+    // Pass 1: collect all defined symbols (global and local).
     for (obj_idx, obj) in objects.iter().enumerate() {
         for sym in &obj.symbols {
-            if !sym.is_defined || !sym.is_global { continue; }
+            if !sym.is_defined { continue; }
             let sec_idx = match sym.section_idx {
                 Some(i) => i,
                 None => continue, // absolute symbol; skip for now

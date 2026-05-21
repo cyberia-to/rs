@@ -178,7 +178,7 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     let n_dylibs = args.dylibs.len().max(1); // at least libSystem
     let dylib_sizes: Vec<usize> = args.dylibs.iter().map(|p| {
         let total = p.len() + 1; // null-terminated
-        24 + align_up(total, 4)  // 24-byte header + padded name
+        24 + align_up(total, 8)  // 24-byte header + padded name (8-byte aligned for 64-bit)
     }).collect();
     let dylib_total: usize = if args.dylibs.is_empty() {
         56 // libSystem fallback
@@ -346,7 +346,7 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
         for (i, dylib_path) in args.dylibs.iter().enumerate() {
             let bytes = dylib_path.as_bytes();
             let name_len = bytes.len() + 1;
-            let padded = align_up(name_len, 4);
+            let padded = align_up(name_len, 8);
             let cmdsize = 24 + padded;
             push_u32(&mut out, LC_LOAD_DYLIB);
             push_u32(&mut out, cmdsize as u32);

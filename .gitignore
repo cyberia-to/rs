@@ -1,2 +1,13 @@
 /target
 /.vendor
+
+# crate-local build artifacts
+codegen/target/
+codegen/Cargo.lock
+codegen/librust_out.rlib
+
+# rustc crash dumps
+rustc-ice-*.txt
+
+# OS
+.DS_Store

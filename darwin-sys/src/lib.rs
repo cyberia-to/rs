@@ -19,12 +19,14 @@ extern crate alloc;
 pub mod error;
 pub mod ffi;
 pub mod fs;
+pub mod dir;
 pub mod process;
 pub mod thread;
 pub mod sync;
 pub mod time;
 pub mod env;
 pub mod rand;
+pub mod signal;
 
 pub use error::{OsError, Result};
 pub use ffi::types::*;

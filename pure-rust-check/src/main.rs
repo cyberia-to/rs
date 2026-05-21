@@ -49,11 +49,18 @@ const KNOWN_C_CRATES: &[&str] = &[
     "lzma-sys",
 ];
 
+/// Pure-Rust crates with -sys suffix that are NOT C wrappers.
+const KNOWN_PURE_SYS_CRATES: &[&str] = &[
+    "darwin-sys", // our own pure-Rust macOS FFI surface
+];
+
 fn is_suspect_crate(name: &str) -> bool {
+    if KNOWN_PURE_SYS_CRATES.contains(&name) {
+        return false;
+    }
     if KNOWN_C_CRATES.contains(&name) {
         return true;
     }
-    // Any crate ending in -sys is suspect
     name.ends_with("-sys")
 }
 

@@ -15,8 +15,10 @@ fn main() {
 
     let input = EmitInput {
         code: &code,
-        data: vec![StaticData { name: "__msg".into(), bytes: b"Hello, world!\n".to_vec() }],
+        data: vec![StaticData { name: "__msg".into(), bytes: b"Hello, world!\n".to_vec(), writable: false }],
         relocs: vec![DataReloc { adrp_offset: 0, add_offset: 4, symbol: "__msg".into() }],
+        static_relocs: vec![],
+        fn_offsets: std::collections::HashMap::new(),
         entry_offset: 0,
     };
     let binary = emit_macho(&input);

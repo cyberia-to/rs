@@ -10,8 +10,18 @@ use rustc_middle::ty::{self, Instance, TyCtxt, TyKind};
 use crate::lir::{Label, LIROp, Reg};
 
 pub struct StaticData {
-    pub name: String,
-    pub bytes: Vec<u8>,
+    pub name:     String,
+    pub bytes:    Vec<u8>,
+    pub writable: bool,
+}
+
+/// A pointer-sized relocation within a static data block:
+/// at `byte_offset` within the static named `static_name`,
+/// store the absolute VM address of `fn_symbol`.
+pub struct StaticReloc {
+    pub static_name: String,
+    pub byte_offset: usize,
+    pub fn_symbol:   String,
 }
 
 /// Whether a MIR place lives in a register or behind a memory pointer.
@@ -21,19 +31,29 @@ enum PlaceLoc {
 }
 
 pub struct MirToLir<'tcx> {
-    tcx:      TyCtxt<'tcx>,
-    next_vreg: u32,
-    ops:       Vec<LIROp>,
-    locals:    HashMap<mir::Local, Reg>,
-    statics:   Vec<StaticData>,
+    tcx:          TyCtxt<'tcx>,
+    instance:     Instance<'tcx>,  // current function being lowered, for subst normalization
+    next_vreg:    u32,
+    ops:          Vec<LIROp>,
+    locals:       HashMap<mir::Local, Reg>,
+    statics:      Vec<StaticData>,
+    static_relocs: Vec<StaticReloc>,
+    tls_vars:     HashMap<String, u64>,  // storage_sym → byte size
+    agg_counter:  u32,
 }
 
 impl<'tcx> MirToLir<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>) -> Self {
-        Self { tcx, next_vreg: 0, ops: Vec::new(), locals: HashMap::new(), statics: Vec::new() }
+    pub fn new(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) -> Self {
+        Self {
+            tcx, instance, next_vreg: 0, ops: Vec::new(), locals: HashMap::new(),
+            statics: Vec::new(), static_relocs: Vec::new(),
+            tls_vars: HashMap::new(), agg_counter: 0,
+        }
     }
 
     pub fn take_statics(&mut self) -> Vec<StaticData> { std::mem::take(&mut self.statics) }
+    pub fn take_static_relocs(&mut self) -> Vec<StaticReloc> { std::mem::take(&mut self.static_relocs) }
+    pub fn take_tls_vars(&mut self) -> HashMap<String, u64> { std::mem::take(&mut self.tls_vars) }
 
     fn alloc_reg(&mut self) -> Reg {
         let r = Reg(self.next_vreg);
@@ -53,6 +73,7 @@ impl<'tcx> MirToLir<'tcx> {
         body: &mir::Body<'tcx>,
         instance: Instance<'tcx>,
     ) -> Result<Vec<LIROp>, String> {
+        self.instance = instance;
         self.ops.clear();
         self.locals.clear();
         self.next_vreg = 0;
@@ -102,6 +123,17 @@ impl<'tcx> MirToLir<'tcx> {
             mir::StatementKind::StorageLive(_)
             | mir::StatementKind::StorageDead(_)
             | mir::StatementKind::Nop => {}
+            mir::StatementKind::SetDiscriminant { place, variant_index } => {
+                // Write the enum discriminant (tag value) at offset 0 of the enum.
+                let tag = variant_index.as_u32() as u64;
+                let ptr = match self.lower_place(place, body)? {
+                    PlaceLoc::Reg(r) => r,
+                    PlaceLoc::Mem(ptr) => ptr,
+                };
+                let tmp = self.alloc_reg();
+                self.ops.push(LIROp::LoadImm(tmp, tag));
+                self.ops.push(LIROp::Store { src: tmp, base: ptr, offset: 0 });
+            }
             _ => {
                 self.ops.push(LIROp::Comment(format!("stmt: {:?}", stmt.kind)));
             }
@@ -218,8 +250,14 @@ impl<'tcx> MirToLir<'tcx> {
         match self.lower_place(place, body)? {
             PlaceLoc::Reg(r) => Ok(r),
             PlaceLoc::Mem(ptr) => {
+                let ty  = place.ty(&body.local_decls, self.tcx).ty;
+                let sz  = self.type_size(ty) as u8;
                 let dst = self.alloc_reg();
-                self.ops.push(LIROp::Load { dst, base: ptr, offset: 0 });
+                if sz > 0 && sz < 8 {
+                    self.ops.push(LIROp::LoadSize { dst, base: ptr, offset: 0, size: sz });
+                } else {
+                    self.ops.push(LIROp::Load { dst, base: ptr, offset: 0 });
+                }
                 Ok(dst)
             }
         }
@@ -228,10 +266,28 @@ impl<'tcx> MirToLir<'tcx> {
     // ── Layout helpers ─────────────────────────────────────────────────────
 
     fn field_byte_offset(&self, ty: ty::Ty<'tcx>, field_idx: usize) -> u64 {
+        // Fat pointer (ref/rawptr to a dyn Trait or slice): two pointer-sized fields.
+        // Field 0 = data pointer (offset 0), field 1 = vtable/length pointer (offset 8).
+        // layout_of fails for unsized pointees, so handle fat pointers explicitly.
+        if self.is_fat_ptr_type(ty) {
+            return if field_idx == 0 { 0 } else { 8 };
+        }
         let env = ty::TypingEnv::fully_monomorphized();
         self.tcx.layout_of(env.as_query_input(ty))
             .map(|l| l.fields.offset(field_idx).bytes())
             .unwrap_or(0)
+    }
+
+    /// Returns true if `ty` is a fat-pointer type (&dyn Trait, *const dyn Trait,
+    /// &[T], *const [T], etc.) — i.e., a pointer/ref to an unsized type.
+    fn is_fat_ptr_type(&self, ty: ty::Ty<'tcx>) -> bool {
+        let pointee = match ty.kind() {
+            TyKind::Ref(_, inner, _)    => *inner,
+            TyKind::RawPtr(inner, _)    => *inner,
+            _ => return false,
+        };
+        // A dyn Trait or slice pointee makes the pointer fat (two words).
+        matches!(pointee.kind(), TyKind::Dynamic(..) | TyKind::Slice(_) | TyKind::Str)
     }
 
     fn type_size(&self, ty: ty::Ty<'tcx>) -> u64 {
@@ -243,6 +299,13 @@ impl<'tcx> MirToLir<'tcx> {
 
     fn type_bits(&self, ty: ty::Ty<'tcx>) -> u64 {
         self.type_size(ty) * 8
+    }
+
+    fn type_align(&self, ty: ty::Ty<'tcx>) -> u64 {
+        let env = ty::TypingEnv::fully_monomorphized();
+        self.tcx.layout_of(env.as_query_input(ty))
+            .map(|l| l.align.abi.bytes())
+            .unwrap_or(8)
     }
 
     fn elem_type(&self, ty: ty::Ty<'tcx>) -> Option<ty::Ty<'tcx>> {
@@ -314,17 +377,37 @@ impl<'tcx> MirToLir<'tcx> {
             }
 
             mir::Rvalue::UnaryOp(op, operand) => {
-                let s = self.lower_operand(operand, body)?;
-                let insn = match op {
-                    mir::UnOp::Not => LIROp::Not(dst, s),
-                    mir::UnOp::Neg => LIROp::Neg(dst, s),
-                    mir::UnOp::PtrMetadata => {
-                        // fat pointer metadata (len or vtable ptr) is the high word.
-                        // We don't track fat pointers, emit zero.
-                        LIROp::LoadImm(dst, 0)
+                match op {
+                    mir::UnOp::Not => {
+                        let s = self.lower_operand(operand, body)?;
+                        self.ops.push(LIROp::Not(dst, s));
                     }
-                };
-                self.ops.push(insn);
+                    mir::UnOp::Neg => {
+                        let s = self.lower_operand(operand, body)?;
+                        self.ops.push(LIROp::Neg(dst, s));
+                    }
+                    mir::UnOp::PtrMetadata => {
+                        // `PtrMetadata(*fat_ptr)` extracts the metadata word (vtable ptr or length).
+                        // The operand is a fat pointer stored in memory (a reg holding its address).
+                        // Fat pointers are two consecutive 8-byte words: [data_ptr, metadata].
+                        // Lower the operand's place to a memory address, then load at offset +8.
+                        if let mir::Operand::Copy(place) | mir::Operand::Move(place) = operand {
+                            match self.lower_place(place, body)? {
+                                PlaceLoc::Mem(ptr) => {
+                                    self.ops.push(LIROp::Load { dst, base: ptr, offset: 8 });
+                                }
+                                PlaceLoc::Reg(r) => {
+                                    // Fat ptr is in a register: metadata is in the high word.
+                                    // Emit a shift to extract upper 64 bits — but fat ptrs are
+                                    // typically in memory. Fall back: treat reg as address and load.
+                                    self.ops.push(LIROp::Load { dst, base: r, offset: 8 });
+                                }
+                            }
+                        } else {
+                            self.ops.push(LIROp::LoadImm(dst, 0));
+                        }
+                    }
+                }
             }
 
             mir::Rvalue::Cast(kind, operand, to_ty) => {
@@ -340,10 +423,22 @@ impl<'tcx> MirToLir<'tcx> {
                     let base = self.local_reg(place.local);
                     if dst != base { self.ops.push(LIROp::Move(dst, base)); }
                 } else if place.projection.is_empty() {
-                    // Taking address of a local — it would need to be stack-allocated.
-                    // Phase 3 best-effort: treat the local's register value as the address.
-                    let base = self.local_reg(place.local);
-                    if dst != base { self.ops.push(LIROp::Move(dst, base)); }
+                    // Taking address of a plain local. Allocate a writable BSS slot,
+                    // store the local's current value there, return its address.
+                    // This is correct for read-only references and short-lived borrows.
+                    let val = self.local_reg(place.local);
+                    let ty  = body.local_decls[place.local].ty;
+                    let sz  = self.type_size(ty).max(1) as usize;
+                    let sym = format!("__local_ref_{}", self.agg_counter);
+                    self.agg_counter += 1;
+                    self.statics.push(StaticData { name: sym.clone(), bytes: vec![0u8; sz], writable: true });
+                    self.ops.push(LIROp::LoadAddr { dst, symbol: sym.clone() });
+                    let size_u8 = sz as u8;
+                    if sz > 0 && sz < 8 {
+                        self.ops.push(LIROp::StoreSize { src: val, base: dst, offset: 0, size: size_u8 });
+                    } else {
+                        self.ops.push(LIROp::Store { src: val, base: dst, offset: 0 });
+                    }
                 } else {
                     // General case: compute the address of the place.
                     match self.lower_place(place, body)? {
@@ -392,8 +487,30 @@ impl<'tcx> MirToLir<'tcx> {
                         // Small struct with constant fields: pack into one register.
                         self.ops.push(LIROp::LoadImm(dst, packed));
                     } else {
-                        // General case: best-effort zero.
-                        self.ops.push(LIROp::LoadImm(dst, 0));
+                        // General case: allocate writable BSS static for the aggregate.
+                        let agg_id = self.agg_counter;
+                        self.agg_counter += 1;
+                        let field_tys: Vec<ty::Ty<'tcx>> = fields.iter_enumerated()
+                            .map(|(_, op)| op.ty(&body.local_decls, self.tcx))
+                            .collect();
+                        let (offsets, total) = self.sequential_offsets(&field_tys);
+                        let sym = format!("__agg_{agg_id}");
+                        self.statics.push(StaticData {
+                            name: sym.clone(),
+                            bytes: vec![0u8; total as usize],
+                            writable: true,
+                        });
+                        self.ops.push(LIROp::LoadAddr { dst, symbol: sym });
+                        for (idx, _) in fields.iter_enumerated() {
+                            let src = self.lower_operand(&fields[idx], body)?;
+                            let off = offsets[idx.as_usize()] as i32;
+                            let sz  = self.type_size(field_tys[idx.as_usize()]) as u8;
+                            if sz > 0 && sz < 8 {
+                                self.ops.push(LIROp::StoreSize { src, base: dst, offset: off, size: sz });
+                            } else {
+                                self.ops.push(LIROp::Store { src, base: dst, offset: off });
+                            }
+                        }
                     }
                 }
             }
@@ -402,6 +519,36 @@ impl<'tcx> MirToLir<'tcx> {
                 // Read the discriminant of an enum. For C-like enums it's at offset 0.
                 let ptr = self.lower_place_to_reg(place, body)?;
                 self.ops.push(LIROp::Load { dst, base: ptr, offset: 0 });
+            }
+
+            // NullaryOp in this rustc version only carries RuntimeChecks (ub_checks etc.).
+            // Return 0 to disable all runtime checks in our backend.
+            mir::Rvalue::NullaryOp(_) => {
+                self.ops.push(LIROp::LoadImm(dst, 0));
+            }
+
+            // ShallowInitBox: the operand is the raw pointer for a box allocation.
+            mir::Rvalue::ShallowInitBox(operand, _ty) => {
+                let src = self.lower_operand(operand, body)?;
+                if dst != src { self.ops.push(LIROp::Move(dst, src)); }
+            }
+
+            // CopyForDeref: semantically identical to Use(Copy(place)).
+            mir::Rvalue::CopyForDeref(place) => {
+                let src = self.lower_place_to_reg(place, body)?;
+                if dst != src { self.ops.push(LIROp::Move(dst, src)); }
+            }
+
+            // ThreadLocalRef: for the monolithic single-binary path, implement as a
+            // process-global BSS static (correct for single-threaded programs).
+            mir::Rvalue::ThreadLocalRef(def_id) => {
+                let inst    = ty::Instance::mono(self.tcx, *def_id);
+                let sym     = self.tcx.symbol_name(inst).name.to_string();
+                let ty      = self.tcx.type_of(*def_id).instantiate_identity();
+                let size    = self.type_size(ty).max(1);
+                let storage = format!("__tls_{sym}");
+                self.tls_vars.insert(storage.clone(), size);
+                self.ops.push(LIROp::LoadAddr { dst, symbol: storage });
             }
 
             _ => {
@@ -508,11 +655,60 @@ impl<'tcx> MirToLir<'tcx> {
     fn intern_alloc(&mut self, alloc_id: rustc_middle::mir::interpret::AllocId, _ty: ty::Ty<'tcx>) -> Option<String> {
         if let GlobalAlloc::Memory(alloc) = self.tcx.global_alloc(alloc_id) {
             let name = format!("__anon_const_{:?}", alloc_id);
-            let bytes = alloc.inner().inspect_with_uninit_and_ptr_outside_interpreter(0..alloc.inner().len()).to_vec();
-            self.statics.push(StaticData { name: name.clone(), bytes });
+            let inner = alloc.inner();
+            let len = inner.len();
+            let mut bytes = inner.inspect_with_uninit_and_ptr_outside_interpreter(0..len).to_vec();
+            // Collect pointer-sized relocations (function pointers in vtables, etc.).
+            // Each provenance entry maps a byte offset to an alloc that may be a function.
+            for (offset, prov) in inner.provenance().ptrs().iter() {
+                let byte_off = offset.bytes() as usize;
+                if byte_off + 8 > bytes.len() { continue; }
+                let prov_alloc_id = prov.alloc_id();
+                match self.tcx.global_alloc(prov_alloc_id) {
+                    GlobalAlloc::Function { instance } => {
+                        let sym = self.tcx.symbol_name(instance).name.to_string();
+                        // Zero out the pointer slot; the linker/emitter will patch it.
+                        bytes[byte_off..byte_off + 8].fill(0);
+                        self.static_relocs.push(StaticReloc {
+                            static_name: name.clone(),
+                            byte_offset: byte_off,
+                            fn_symbol:   sym,
+                        });
+                    }
+                    GlobalAlloc::Static(def_id) => {
+                        // Pointer to another static — record as data-to-data; zero the slot.
+                        let inst = ty::Instance::mono(self.tcx, def_id);
+                        let sym = self.tcx.symbol_name(inst).name.to_string();
+                        bytes[byte_off..byte_off + 8].fill(0);
+                        self.static_relocs.push(StaticReloc {
+                            static_name: name.clone(),
+                            byte_offset: byte_off,
+                            fn_symbol:   sym,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            self.statics.push(StaticData { name: name.clone(), bytes, writable: false });
             return Some(name);
         }
         None
+    }
+
+    // Sequential C-style field layout using individual field types.
+    fn sequential_offsets(&self, field_tys: &[ty::Ty<'tcx>]) -> (Vec<u64>, u64) {
+        let mut offsets = Vec::with_capacity(field_tys.len());
+        let mut cur = 0u64;
+        let mut max_align = 1u64;
+        for &ty in field_tys {
+            let align = self.type_align(ty);
+            max_align = max_align.max(align);
+            cur = (cur + align - 1) & !(align - 1);
+            offsets.push(cur);
+            cur += self.type_size(ty);
+        }
+        let total = if field_tys.is_empty() { 0 } else { (cur + max_align - 1) & !(max_align - 1) };
+        (offsets, total.max(1))
     }
 
     // ── Terminator lowering ────────────────────────────────────────────────
@@ -535,12 +731,31 @@ impl<'tcx> MirToLir<'tcx> {
                 self.ops.push(LIROp::Jump(bb_label(*target)));
             }
 
-            // Drop: with panic=abort there's no unwind. Emit the drop call if we know the
-            // symbol, then jump to target.
-            mir::TerminatorKind::Drop { place: _, target, .. } => {
-                // Phase 3: skip drop glue — just jump to target.
-                // (Correct for types without custom Drop or for panic=abort flows.)
+            // Drop: call drop_in_place::<T> when the type has a non-trivial destructor.
+            mir::TerminatorKind::Drop { place, target, .. } => {
+                let ty = place.ty(&body.local_decls, self.tcx).ty;
+                let typing_env = ty::TypingEnv::fully_monomorphized();
+                if ty.needs_drop(self.tcx, typing_env) {
+                    let def_id = self.tcx.require_lang_item(rustc_hir::LangItem::DropInPlace, rustc_span::DUMMY_SP);
+                    let args = self.tcx.mk_args(&[ty.into()]);
+                    let drop_inst = Instance::try_resolve(self.tcx, typing_env, def_id, args)
+                        .ok().flatten();
+                    if let Some(inst) = drop_inst {
+                        let ptr = match self.lower_place(place, body)? {
+                            PlaceLoc::Mem(ptr) => ptr,
+                            PlaceLoc::Reg(r)   => r,
+                        };
+                        self.ops.push(LIROp::Move(Reg(0), ptr));
+                        let sym = self.tcx.symbol_name(inst).name.to_string();
+                        self.ops.push(LIROp::Call(sym));
+                    }
+                }
                 self.ops.push(LIROp::Jump(bb_label(*target)));
+            }
+
+            // Unwind paths in panic=abort programs terminate execution.
+            mir::TerminatorKind::UnwindResume | mir::TerminatorKind::UnwindTerminate(_) => {
+                self.ops.push(LIROp::Halt);
             }
 
             mir::TerminatorKind::Assert { cond, expected, target, unwind: _, msg: _ } => {
@@ -618,9 +833,16 @@ impl<'tcx> MirToLir<'tcx> {
                 if is_direct_fn_def {
                     if let mir::Operand::Constant(c) = func {
                         if let TyKind::FnDef(def_id, substs) = c.const_.ty().kind() {
-                            // Atomics are handled before argument setup.
                             if let Some(intr) = self.tcx.intrinsic(*def_id) {
+                                // Const intrinsics (size_of, align_of, ...) before arg setup.
+                                if self.lower_const_intrinsic(intr.name.as_str(), substs, destination, target, body)? {
+                                    return Ok(());
+                                }
+                                // Atomic intrinsics before arg setup.
                                 if self.lower_atomic(intr.name.as_str(), args, destination, target, body)? {
+                                    return Ok(());
+                                }
+                                if self.lower_misc_intrinsic(intr.name.as_str(), substs, args, destination, target, body)? {
                                     return Ok(());
                                 }
                             }
@@ -657,11 +879,30 @@ impl<'tcx> MirToLir<'tcx> {
                     self.ops.push(LIROp::CallIndirect(fp));
                 } else if let mir::Operand::Constant(c) = func {
                     if let TyKind::FnDef(def_id, substs) = c.const_.ty().kind() {
-                        let inst = Instance::try_resolve(self.tcx, ty::TypingEnv::fully_monomorphized(), *def_id, substs)
+                        // Instantiate the callee's substs through the current instance's args
+                        // so that abstract type parameters (e.g. `F` in `apply<F>`) become
+                        // concrete (the actual closure type).
+                        let mono_substs = self.tcx.instantiate_and_normalize_erasing_regions(
+                            self.instance.args,
+                            ty::TypingEnv::fully_monomorphized(),
+                            ty::EarlyBinder::bind(*substs),
+                        );
+                        let inst_opt = Instance::try_resolve(self.tcx, ty::TypingEnv::fully_monomorphized(), *def_id, mono_substs)
                             .ok().flatten()
-                            .unwrap_or_else(|| Instance::mono(self.tcx, *def_id));
-                        let sym = self.tcx.symbol_name(inst).name.to_string();
-                        self.ops.push(LIROp::Call(sym));
+                            .or_else(|| {
+                                if self.tcx.generics_of(*def_id).count() == 0 {
+                                    Some(Instance::mono(self.tcx, *def_id))
+                                } else {
+                                    None
+                                }
+                            });
+                        if let Some(inst) = inst_opt {
+                            let sym = self.tcx.symbol_name(inst).name.to_string();
+                            self.ops.push(LIROp::Call(sym));
+                        } else {
+                            let name = self.tcx.def_path_str(*def_id);
+                            self.tcx.sess.dcx().warn(format!("unresolved generic call: {name}"));
+                        }
                     } else {
                         self.ops.push(LIROp::Comment("call to non-FnDef constant".into()));
                     }
@@ -681,22 +922,69 @@ impl<'tcx> MirToLir<'tcx> {
                 }
             }
 
-            mir::TerminatorKind::InlineAsm { template, operands: _, options: _, targets, .. } => {
+            mir::TerminatorKind::InlineAsm { template, operands, options: _, targets, .. } => {
+                // Lower operands into x0..xN; build operand_idx→register-name table.
+                let mut operand_regs: Vec<String> = vec![String::new(); operands.len()];
+                let mut out_ops: Vec<LIROp> = Vec::new();
+
+                for (idx, op) in operands.iter().enumerate() {
+                    let phys = idx as u32;
+                    operand_regs[idx] = format!("x{phys}");
+                    match op {
+                        mir::InlineAsmOperand::In { value, .. } => {
+                            let src = self.lower_operand(&value, body)?;
+                            if src.0 != phys { self.ops.push(LIROp::Move(Reg(phys), src)); }
+                        }
+                        mir::InlineAsmOperand::InOut { in_value, out_place, .. } => {
+                            let src = self.lower_operand(&in_value, body)?;
+                            if src.0 != phys { self.ops.push(LIROp::Move(Reg(phys), src)); }
+                            if let Some(p) = out_place {
+                                match self.lower_place(&p, body)? {
+                                    PlaceLoc::Reg(d) => out_ops.push(LIROp::Move(d, Reg(phys))),
+                                    PlaceLoc::Mem(ptr) => out_ops.push(LIROp::Store { src: Reg(phys), base: ptr, offset: 0 }),
+                                }
+                            }
+                        }
+                        mir::InlineAsmOperand::Out { place, .. } => {
+                            if let Some(p) = place {
+                                match self.lower_place(&p, body)? {
+                                    PlaceLoc::Reg(d) => out_ops.push(LIROp::Move(d, Reg(phys))),
+                                    PlaceLoc::Mem(ptr) => out_ops.push(LIROp::Store { src: Reg(phys), base: ptr, offset: 0 }),
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Build template string, substituting register names for placeholders.
                 let mut lines: Vec<String> = Vec::new();
+                let mut current = String::new();
                 for piece in *template {
                     match piece {
                         rustc_ast::InlineAsmTemplatePiece::String(s) => {
-                            for line in s.split('\n') {
-                                let t = line.trim();
-                                if !t.is_empty() { lines.push(t.to_string()); }
+                            for ch in s.chars() {
+                                if ch == '\n' {
+                                    let t = current.trim().to_string();
+                                    if !t.is_empty() { lines.push(t); }
+                                    current.clear();
+                                } else {
+                                    current.push(ch);
+                                }
                             }
                         }
-                        rustc_ast::InlineAsmTemplatePiece::Placeholder { .. } => {
-                            lines.push("nop".to_string()); // placeholder not yet expanded
+                        rustc_ast::InlineAsmTemplatePiece::Placeholder { operand_idx, .. } => {
+                            if let Some(reg) = operand_regs.get(*operand_idx) {
+                                current.push_str(reg);
+                            }
                         }
                     }
                 }
+                let t = current.trim().to_string();
+                if !t.is_empty() { lines.push(t); }
+
                 self.ops.push(LIROp::Asm { lines });
+                self.ops.extend(out_ops);
                 if let Some(&next) = targets.first() {
                     self.ops.push(LIROp::Jump(bb_label(next)));
                 }
@@ -707,6 +995,35 @@ impl<'tcx> MirToLir<'tcx> {
             }
         }
         Ok(())
+    }
+
+    // ── Const intrinsic lowering ───────────────────────────────────────────
+
+    fn lower_const_intrinsic(
+        &mut self,
+        name: &str,
+        substs: ty::GenericArgsRef<'tcx>,
+        destination: &mir::Place<'tcx>,
+        target: &Option<mir::BasicBlock>,
+        body: &mir::Body<'tcx>,
+    ) -> Result<bool, String> {
+        let val: Option<u64> = match name {
+            "size_of" => substs.types().next().map(|ty| self.type_size(ty)),
+            "min_align_of" | "align_of" => substs.types().next().map(|ty| self.type_align(ty)),
+            "needs_drop" => Some(0), // conservative: no runtime checks in our backend
+            _ => None,
+        };
+        if let Some(val) = val {
+            let tmp = self.alloc_reg();
+            self.ops.push(LIROp::LoadImm(tmp, val));
+            match self.lower_place(destination, body)? {
+                PlaceLoc::Reg(d) => { if d != tmp { self.ops.push(LIROp::Move(d, tmp)); } }
+                PlaceLoc::Mem(ptr) => { self.ops.push(LIROp::Store { src: tmp, base: ptr, offset: 0 }); }
+            }
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     // ── Atomic intrinsic lowering ──────────────────────────────────────────
@@ -775,7 +1092,461 @@ impl<'tcx> MirToLir<'tcx> {
             if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
             return Ok(true);
         }
+        // atomic_and_* : ptr, val → old
+        if name.starts_with("atomic_and") {
+            let ptr = self.lower_operand(&args[0].node, body)?;
+            let val = self.lower_operand(&args[1].node, body)?;
+            self.ops.push(LIROp::AtomicFetchAnd { dst: dst_reg, val, ptr });
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        // atomic_or_* : ptr, val → old
+        if name.starts_with("atomic_or") {
+            let ptr = self.lower_operand(&args[0].node, body)?;
+            let val = self.lower_operand(&args[1].node, body)?;
+            self.ops.push(LIROp::AtomicFetchOr { dst: dst_reg, val, ptr });
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        // atomic_xor_* : ptr, val → old
+        if name.starts_with("atomic_xor") {
+            let ptr = self.lower_operand(&args[0].node, body)?;
+            let val = self.lower_operand(&args[1].node, body)?;
+            self.ops.push(LIROp::AtomicFetchXor { dst: dst_reg, val, ptr });
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        // atomic_nand_* : ptr, val → old
+        if name.starts_with("atomic_nand") {
+            let ptr = self.lower_operand(&args[0].node, body)?;
+            let val = self.lower_operand(&args[1].node, body)?;
+            self.ops.push(LIROp::AtomicFetchNand { dst: dst_reg, val, ptr });
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        // atomic_max_* : ptr, val → old  (signed max)
+        if name.starts_with("atomic_max") {
+            let ptr = self.lower_operand(&args[0].node, body)?;
+            let val = self.lower_operand(&args[1].node, body)?;
+            self.ops.push(LIROp::AtomicFetchMax { dst: dst_reg, val, ptr });
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        // atomic_min_* : ptr, val → old  (signed min)
+        if name.starts_with("atomic_min") {
+            let ptr = self.lower_operand(&args[0].node, body)?;
+            let val = self.lower_operand(&args[1].node, body)?;
+            self.ops.push(LIROp::AtomicFetchMin { dst: dst_reg, val, ptr });
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        // atomic_umax_* : ptr, val → old  (unsigned max)
+        if name.starts_with("atomic_umax") {
+            let ptr = self.lower_operand(&args[0].node, body)?;
+            let val = self.lower_operand(&args[1].node, body)?;
+            self.ops.push(LIROp::AtomicFetchUMax { dst: dst_reg, val, ptr });
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        // atomic_umin_* : ptr, val → old  (unsigned min)
+        if name.starts_with("atomic_umin") {
+            let ptr = self.lower_operand(&args[0].node, body)?;
+            let val = self.lower_operand(&args[1].node, body)?;
+            self.ops.push(LIROp::AtomicFetchUMin { dst: dst_reg, val, ptr });
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
+        // atomic_fence_* and atomic_singlethreadfence_* → DMB ISH
+        if name.starts_with("atomic_fence") || name.starts_with("atomic_singlethreadfence") {
+            self.ops.push(LIROp::Fence);
+            if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+            return Ok(true);
+        }
         // Not an atomic intrinsic we handle.
+        Ok(false)
+    }
+
+    // ── Misc intrinsic lowering ────────────────────────────────────────────
+
+    fn lower_misc_intrinsic(
+        &mut self,
+        name: &str,
+        substs: ty::GenericArgsRef<'tcx>,
+        args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
+        destination: &mir::Place<'tcx>,
+        target: &Option<mir::BasicBlock>,
+        body: &mir::Body<'tcx>,
+    ) -> Result<bool, String> {
+        match name {
+            // ── No-ops ──────────────────────────────────────────────────────
+            "forget" | "black_box" | "assume"
+            | "assert_inhabited" | "assert_zero_valid" | "assert_mem_uninitialized_valid"
+            | "nontemporal_store"  // treat as regular store no-op
+            => {
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Terminate ───────────────────────────────────────────────────
+            "abort" | "breakpoint" | "unreachable" => {
+                self.ops.push(LIROp::Halt);
+                return Ok(true);
+            }
+
+            // ── Bit-identity casts ──────────────────────────────────────────
+            "transmute" | "transmute_unchecked" | "read_via_copy" | "write_via_move" => {
+                if !args.is_empty() {
+                    let src = self.lower_operand(&args[0].node, body)?;
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(d) => { if d != src { self.ops.push(LIROp::Move(d, src)); } }
+                        PlaceLoc::Mem(p) => {
+                            let ty  = destination.ty(&body.local_decls, self.tcx).ty;
+                            let sz  = self.type_size(ty) as u8;
+                            if sz > 0 && sz < 8 {
+                                self.ops.push(LIROp::StoreSize { src, base: p, offset: 0, size: sz });
+                            } else {
+                                self.ops.push(LIROp::Store { src, base: p, offset: 0 });
+                            }
+                        }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Memory copy / set ───────────────────────────────────────────
+            "copy_nonoverlapping" | "copy" => {
+                // copy_nonoverlapping(src, dst, count): count in elements
+                if args.len() >= 3 {
+                    let src_ptr = self.lower_operand(&args[0].node, body)?;
+                    let dst_ptr = self.lower_operand(&args[1].node, body)?;
+                    let count   = self.lower_operand(&args[2].node, body)?;
+                    // Scale count by element size.
+                    let elem_ty = substs.types().next();
+                    let elem_sz = elem_ty.map(|t| self.type_size(t)).unwrap_or(1);
+                    let byte_count = if elem_sz == 1 {
+                        count
+                    } else {
+                        let sz_reg = self.alloc_reg();
+                        let bc = self.alloc_reg();
+                        self.ops.push(LIROp::LoadImm(sz_reg, elem_sz));
+                        self.ops.push(LIROp::Mul(bc, count, sz_reg));
+                        bc
+                    };
+                    // Call __trident_memcpy(dst, src, byte_count).
+                    self.ops.push(LIROp::Move(Reg(0), dst_ptr));
+                    self.ops.push(LIROp::Move(Reg(1), src_ptr));
+                    self.ops.push(LIROp::Move(Reg(2), byte_count));
+                    self.ops.push(LIROp::Call("__trident_memcpy".to_string()));
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            "write_bytes" => {
+                // write_bytes(dst, val, count): count in elements of T
+                if args.len() >= 3 {
+                    let dst_ptr = self.lower_operand(&args[0].node, body)?;
+                    let val     = self.lower_operand(&args[1].node, body)?;
+                    let count   = self.lower_operand(&args[2].node, body)?;
+                    let elem_ty = substs.types().next();
+                    let elem_sz = elem_ty.map(|t| self.type_size(t)).unwrap_or(1);
+                    let byte_count = if elem_sz == 1 {
+                        count
+                    } else {
+                        let sz_reg = self.alloc_reg();
+                        let bc = self.alloc_reg();
+                        self.ops.push(LIROp::LoadImm(sz_reg, elem_sz));
+                        self.ops.push(LIROp::Mul(bc, count, sz_reg));
+                        bc
+                    };
+                    self.ops.push(LIROp::Move(Reg(0), dst_ptr));
+                    self.ops.push(LIROp::Move(Reg(1), val));
+                    self.ops.push(LIROp::Move(Reg(2), byte_count));
+                    self.ops.push(LIROp::Call("__trident_memset".to_string()));
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Pointer arithmetic ──────────────────────────────────────────
+            "offset" | "arith_offset" => {
+                if args.len() >= 2 {
+                    let ptr = self.lower_operand(&args[0].node, body)?;
+                    let off = self.lower_operand(&args[1].node, body)?;
+                    let elem_ty = substs.types().next();
+                    let elem_sz = elem_ty.map(|t| self.type_size(t)).unwrap_or(1);
+                    let result = self.alloc_reg();
+                    if elem_sz == 1 {
+                        self.ops.push(LIROp::Add(result, ptr, off));
+                    } else {
+                        let sz_reg   = self.alloc_reg();
+                        let byte_off = self.alloc_reg();
+                        self.ops.push(LIROp::LoadImm(sz_reg, elem_sz));
+                        self.ops.push(LIROp::Mul(byte_off, off, sz_reg));
+                        self.ops.push(LIROp::Add(result, ptr, byte_off));
+                    }
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(d) => { if d != result { self.ops.push(LIROp::Move(d, result)); } }
+                        PlaceLoc::Mem(p) => { self.ops.push(LIROp::Store { src: result, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Wrapping arithmetic (identical to regular in our backend) ───
+            "wrapping_add" => {
+                if args.len() >= 2 {
+                    let a = self.lower_operand(&args[0].node, body)?;
+                    let b = self.lower_operand(&args[1].node, body)?;
+                    let d = self.alloc_reg();
+                    self.ops.push(LIROp::Add(d, a, b));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+            "wrapping_sub" => {
+                if args.len() >= 2 {
+                    let a = self.lower_operand(&args[0].node, body)?;
+                    let b = self.lower_operand(&args[1].node, body)?;
+                    let d = self.alloc_reg();
+                    self.ops.push(LIROp::Sub(d, a, b));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+            "wrapping_mul" => {
+                if args.len() >= 2 {
+                    let a = self.lower_operand(&args[0].node, body)?;
+                    let b = self.lower_operand(&args[1].node, body)?;
+                    let d = self.alloc_reg();
+                    self.ops.push(LIROp::Mul(d, a, b));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Bit ops ─────────────────────────────────────────────────────
+            "rotate_left" => {
+                // ROL by n = ROR by (64-n)
+                if args.len() >= 2 {
+                    let val = self.lower_operand(&args[0].node, body)?;
+                    let rot = self.lower_operand(&args[1].node, body)?;
+                    let sixty4 = self.alloc_reg();
+                    let rot_r  = self.alloc_reg();
+                    let d      = self.alloc_reg();
+                    self.ops.push(LIROp::LoadImm(sixty4, 64));
+                    self.ops.push(LIROp::Sub(rot_r, sixty4, rot));
+                    // ROR via: (val >> rot_r) | (val << rot)
+                    let hi = self.alloc_reg();
+                    let lo = self.alloc_reg();
+                    self.ops.push(LIROp::Shr(hi, val, rot_r));
+                    self.ops.push(LIROp::Shl(lo, val, rot));
+                    self.ops.push(LIROp::Or(d, hi, lo));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+            "rotate_right" => {
+                if args.len() >= 2 {
+                    let val = self.lower_operand(&args[0].node, body)?;
+                    let rot = self.lower_operand(&args[1].node, body)?;
+                    let sixty4 = self.alloc_reg();
+                    let rot_l  = self.alloc_reg();
+                    let d      = self.alloc_reg();
+                    self.ops.push(LIROp::LoadImm(sixty4, 64));
+                    self.ops.push(LIROp::Sub(rot_l, sixty4, rot));
+                    let hi = self.alloc_reg();
+                    let lo = self.alloc_reg();
+                    self.ops.push(LIROp::Shr(hi, val, rot));
+                    self.ops.push(LIROp::Shl(lo, val, rot_l));
+                    self.ops.push(LIROp::Or(d, hi, lo));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Count bits ──────────────────────────────────────────────────
+            "ctlz" | "ctlz_nonzero" => {
+                if !args.is_empty() {
+                    let val = self.lower_operand(&args[0].node, body)?;
+                    let d   = self.alloc_reg();
+                    self.ops.push(LIROp::Move(Reg(8), val));
+                    self.ops.push(LIROp::Asm { lines: vec!["clz x8, x8".to_string()] });
+                    self.ops.push(LIROp::Move(d, Reg(8)));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+            "cttz" | "cttz_nonzero" => {
+                if !args.is_empty() {
+                    let val = self.lower_operand(&args[0].node, body)?;
+                    let d   = self.alloc_reg();
+                    self.ops.push(LIROp::Move(Reg(8), val));
+                    // CTZ via RBIT then CLZ
+                    self.ops.push(LIROp::Asm { lines: vec![
+                        "rbit x8, x8".to_string(),
+                        "clz x8, x8".to_string(),
+                    ]});
+                    self.ops.push(LIROp::Move(d, Reg(8)));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+            "ctpop" => {
+                if !args.is_empty() {
+                    let val = self.lower_operand(&args[0].node, body)?;
+                    let d   = self.alloc_reg();
+                    self.ops.push(LIROp::Move(Reg(8), val));
+                    self.ops.push(LIROp::Asm { lines: vec![
+                        "fmov d0, x8".to_string(),
+                        "cnt v0.8b, v0.8b".to_string(),
+                        "addv b0, v0.8b".to_string(),
+                        "fmov w8, s0".to_string(),
+                    ]});
+                    self.ops.push(LIROp::Move(d, Reg(8)));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Misc size/align ─────────────────────────────────────────────
+            "min_align_of_val" | "align_of_val" => {
+                let val = substs.types().next().map(|t| self.type_align(t)).unwrap_or(1);
+                let tmp = self.alloc_reg();
+                self.ops.push(LIROp::LoadImm(tmp, val));
+                match self.lower_place(destination, body)? {
+                    PlaceLoc::Reg(d) => { if d != tmp { self.ops.push(LIROp::Move(d, tmp)); } }
+                    PlaceLoc::Mem(p) => { self.ops.push(LIROp::Store { src: tmp, base: p, offset: 0 }); }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+            "size_of_val" => {
+                let val = substs.types().next().map(|t| self.type_size(t)).unwrap_or(0);
+                let tmp = self.alloc_reg();
+                self.ops.push(LIROp::LoadImm(tmp, val));
+                match self.lower_place(destination, body)? {
+                    PlaceLoc::Reg(d) => { if d != tmp { self.ops.push(LIROp::Move(d, tmp)); } }
+                    PlaceLoc::Mem(p) => { self.ops.push(LIROp::Store { src: tmp, base: p, offset: 0 }); }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Volatile / unordered (treat as non-volatile for now) ────────
+            "volatile_load" | "unaligned_volatile_load" => {
+                if !args.is_empty() {
+                    let ptr = self.lower_operand(&args[0].node, body)?;
+                    let ty  = destination.ty(&body.local_decls, self.tcx).ty;
+                    let sz  = self.type_size(ty) as u8;
+                    let d   = self.alloc_reg();
+                    if sz > 0 && sz < 8 {
+                        self.ops.push(LIROp::LoadSize { dst: d, base: ptr, offset: 0, size: sz });
+                    } else {
+                        self.ops.push(LIROp::Load { dst: d, base: ptr, offset: 0 });
+                    }
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+            "volatile_store" | "unaligned_volatile_store" => {
+                if args.len() >= 2 {
+                    let ptr = self.lower_operand(&args[0].node, body)?;
+                    let val = self.lower_operand(&args[1].node, body)?;
+                    self.ops.push(LIROp::Store { src: val, base: ptr, offset: 0 });
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Discriminant ────────────────────────────────────────────────
+            "discriminant_value" => {
+                if !args.is_empty() {
+                    let ptr = self.lower_operand(&args[0].node, body)?;
+                    let d   = self.alloc_reg();
+                    self.ops.push(LIROp::Load { dst: d, base: ptr, offset: 0 });
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Unchecked / exact ops (same semantics as regular in our backend) ──
+            "unchecked_add" | "exact_div" => {
+                if args.len() >= 2 {
+                    let a = self.lower_operand(&args[0].node, body)?;
+                    let b = self.lower_operand(&args[1].node, body)?;
+                    let d = self.alloc_reg();
+                    let insn = if name == "unchecked_add" { LIROp::Add(d, a, b) } else { LIROp::SDiv(d, a, b) };
+                    self.ops.push(insn);
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Pointer cast ────────────────────────────────────────────────
+            "ptr_guaranteed_cmp" => {
+                if args.len() >= 2 {
+                    let a = self.lower_operand(&args[0].node, body)?;
+                    let b = self.lower_operand(&args[1].node, body)?;
+                    let d = self.alloc_reg();
+                    self.ops.push(LIROp::Eq(d, a, b));
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            _ => {}
+        }
         Ok(false)
     }
 }

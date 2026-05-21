@@ -7,7 +7,7 @@
 #[cfg(target_os = "macos")]
 mod tests {
 
-use darwin_sys::{rand, time, env, fs, process};
+use darwin_sys::{rand, time, env, fs, dir, process, signal};
 use darwin_sys::ffi::types::*;
 
 // ── Randomness ────────────────────────────────────────────────────────
@@ -237,6 +237,65 @@ fn fs_mmap_anon() {
         assert_eq!(*ptr, 0xAB);
         fs::munmap(ptr, len).unwrap();
     }
+}
+
+// ── Directory iteration ────────────────────────────────────────────────
+
+#[test]
+fn dir_iterate_entries() {
+    let tmp = std::env::temp_dir();
+    let test_dir = tmp.join("darwin_sys_dir_test");
+    let dir_bytes = test_dir.as_os_str().as_encoded_bytes();
+
+    // Clean up any leftover from a previous run.
+    let f1 = test_dir.join("alpha.txt");
+    let f2 = test_dir.join("beta.txt");
+    let _ = fs::unlink(f1.as_os_str().as_encoded_bytes());
+    let _ = fs::unlink(f2.as_os_str().as_encoded_bytes());
+    let _ = fs::rmdir(dir_bytes);
+
+    fs::mkdir(dir_bytes, 0o700).unwrap();
+
+    {
+        let fa = fs::File::create(f1.as_os_str().as_encoded_bytes(), 0o600).unwrap();
+        fa.write_all(b"a").unwrap();
+        let fb = fs::File::create(f2.as_os_str().as_encoded_bytes(), 0o600).unwrap();
+        fb.write_all(b"b").unwrap();
+    }
+
+    let mut d = dir::Dir::open(dir_bytes).unwrap();
+    let mut names: std::vec::Vec<std::vec::Vec<u8>> = std::vec::Vec::new();
+    while let Some(entry) = d.next() {
+        names.push(entry.name().to_vec());
+    }
+
+    assert!(names.iter().any(|n| n == b"alpha.txt"), "alpha.txt missing");
+    assert!(names.iter().any(|n| n == b"beta.txt"),  "beta.txt missing");
+    assert_eq!(names.len(), 2, "unexpected entries: {:?}", names.len());
+
+    // Cleanup.
+    fs::unlink(f1.as_os_str().as_encoded_bytes()).unwrap();
+    fs::unlink(f2.as_os_str().as_encoded_bytes()).unwrap();
+    fs::rmdir(dir_bytes).unwrap();
+}
+
+// ── Signal ────────────────────────────────────────────────────────────
+
+#[test]
+fn signal_ignore_and_restore() {
+    // Ignore SIGPIPE, capture the old handler, then restore it.
+    let old = signal::signal(SIGPIPE, signal::SIG_IGN).unwrap();
+    signal::signal(SIGPIPE, old).unwrap();
+}
+
+#[test]
+fn signal_sigaction_ignore_usr1() {
+    let act = signal::ignore_action();
+    let old = signal::sigaction(SIGUSR1, &act).unwrap();
+    // Raising an ignored signal must not crash.
+    signal::raise(SIGUSR1).unwrap();
+    // Restore.
+    signal::sigaction(SIGUSR1, &old).unwrap();
 }
 
 } // mod tests

@@ -273,6 +273,8 @@ pub const SIGTERM: c_int = 15;
 pub const SIGCHLD: c_int = 20;
 pub const SIGCONT: c_int = 19;
 pub const SIGSTOP: c_int = 17;
+pub const SIGUSR1: c_int = 30;
+pub const SIGUSR2: c_int = 31;
 
 // ── pthread constants ──────────────────────────────────────────────────
 

@@ -247,7 +247,7 @@ use crate::error::{EINVAL};
 /// Copy `path` bytes into `buf` and append a NUL terminator.
 /// Returns a `*const c_char` pointing into `buf`.
 /// Fails with EINVAL if path contains an embedded NUL or is too long.
-fn nul_path<'b>(path: &[u8], buf: &'b mut [u8]) -> Result<*const c_char> {
+pub(crate) fn nul_path<'b>(path: &[u8], buf: &'b mut [u8]) -> Result<*const c_char> {
     if path.len() >= buf.len() {
         return Err(OsError(crate::error::ENAMETOOLONG));
     }

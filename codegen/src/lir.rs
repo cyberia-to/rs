@@ -80,7 +80,16 @@ pub enum LIROp {
     AtomicLoad  { dst: Reg, ptr: Reg },               // LDAR
     AtomicStore { src: Reg, ptr: Reg },               // STLR
     AtomicXchg  { dst: Reg, src: Reg,  ptr: Reg },    // LDAXR/STLXR loop
-    AtomicFetchAdd { dst: Reg, delta: Reg, ptr: Reg },
-    AtomicFetchSub { dst: Reg, delta: Reg, ptr: Reg },
+    AtomicFetchAdd  { dst: Reg, delta: Reg, ptr: Reg },
+    AtomicFetchSub  { dst: Reg, delta: Reg, ptr: Reg },
+    AtomicFetchAnd  { dst: Reg, val: Reg, ptr: Reg },
+    AtomicFetchOr   { dst: Reg, val: Reg, ptr: Reg },
+    AtomicFetchXor  { dst: Reg, val: Reg, ptr: Reg },
+    AtomicFetchNand { dst: Reg, val: Reg, ptr: Reg },
+    AtomicFetchMax  { dst: Reg, val: Reg, ptr: Reg },  // signed
+    AtomicFetchMin  { dst: Reg, val: Reg, ptr: Reg },  // signed
+    AtomicFetchUMax { dst: Reg, val: Reg, ptr: Reg },  // unsigned
+    AtomicFetchUMin { dst: Reg, val: Reg, ptr: Reg },  // unsigned
     AtomicCas  { old: Reg, new: Reg, ptr: Reg, ok: Reg },
+    Fence,                                              // DMB ISH
 }

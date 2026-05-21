@@ -152,3 +152,9 @@ pub fn mov_imm64(rd: u8, val: u64) -> Vec<u32> {
 #[inline] pub fn stlxr(rs: u8, rt: u8, rn: u8) -> u32 {
     0xC800FC00 | ((rs as u32) << 16) | ((rn as u32) << 5) | rt as u32
 }
+// Conditional select (64-bit): CSEL Rd, Rn, Rm, cond
+#[inline] pub fn csel(rd: u8, rn: u8, rm: u8, cond: u8) -> u32 {
+    0x9A800000 | ((rm as u32) << 16) | ((cond as u32) << 12) | ((rn as u32) << 5) | (rd as u32)
+}
+// Data memory barrier inner-shareable (DMB ISH)
+#[inline] pub fn dmb_ish() -> u32 { 0xD5033BBF }

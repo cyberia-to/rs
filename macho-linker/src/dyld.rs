@@ -49,10 +49,16 @@ pub fn build(
     let symbols_offset: u32 = imports_offset + n as u32 * 4;
 
     // Build symbol-names area.
+    // On macOS, all C ABI symbols require an underscore prefix in dyld import tables.
+    // Our codegen emits symbol names without the prefix (e.g. "write" not "_write"),
+    // so we add it here for any name that doesn't already start with '_'.
     let mut names: Vec<u8> = Vec::new();
     let mut name_offsets: Vec<u32> = Vec::new();
     for import in imports {
         name_offsets.push(names.len() as u32);
+        if !import.starts_with('_') {
+            names.push(b'_');
+        }
         names.extend_from_slice(import.as_bytes());
         names.push(0);
     }

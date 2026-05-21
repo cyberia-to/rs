@@ -112,3 +112,12 @@ run_exit_test fnptr fnptr.rs 7
 
 # ── Test 5: cast_ops ──────────────────────────────────────────────────
 run_exit_test cast_ops cast_ops.rs 42
+
+# ── Test 6: size_ops ──────────────────────────────────────────────────
+run_exit_test size_ops size_ops.rs 42
+
+# ── Test 7: asm ───────────────────────────────────────────────────────
+run_exit_test asm asm.rs 42
+
+# ── Test 8: closure ───────────────────────────────────────────────────
+run_exit_test closure closure.rs 42

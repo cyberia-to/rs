@@ -212,13 +212,15 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     let first_section_off = align_up(header_total, 16);
 
     // ---- Compute entry offset ----
-    let entry_off = if let Some(gs) = args.syms.syms.get(args.entry_symbol) {
-        gs.addr - VM_BASE
-    } else if let Some(gs) = args.syms.syms.get("_main") {
-        gs.addr - VM_BASE
-    } else {
-        layout.merged[layout.text_idx].file_offset as u64
-    };
+    // Try the requested symbol, then common aliases (with/without leading underscore).
+    let entry_sym = args.entry_symbol;
+    let entry_sym_no_underscore = entry_sym.strip_prefix('_').unwrap_or(entry_sym);
+    let entry_off = args.syms.syms.get(entry_sym)
+        .or_else(|| args.syms.syms.get(entry_sym_no_underscore))
+        .or_else(|| args.syms.syms.get("_main"))
+        .or_else(|| args.syms.syms.get("main"))
+        .map(|gs| gs.addr - VM_BASE)
+        .unwrap_or_else(|| layout.merged[layout.text_idx].file_offset as u64);
 
     // ---- Build output ----
     let capacity = sig_off + sig_size + 64;
@@ -249,7 +251,7 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     for (_, ms) in &text_secs {
         out.extend_from_slice(unsafe { as_bytes(&Section64 {
             sectname: name16(&ms.name), segname: name16("__TEXT"),
-            addr: ms.vm_addr, size: ms.data.len() as u64,
+            addr: ms.vm_addr, size: ms.virtual_size as u64,
             offset: ms.file_offset as u32, align: ms.align,
             reloff: 0, nreloc: 0, flags: ms.flags,
             reserved1: 0, reserved2: 0, reserved3: 0,
@@ -257,19 +259,31 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     }
 
     // LC_SEGMENT_64 __DATA (if any)
+    // The vmsize must cover all BSS (zerofill) sections even though they have no
+    // file content.  Use the VM extent from data_vmaddr to linkedit_vmaddr.
+    let data_vmsize = if layout.data_vmaddr > 0 {
+        layout.linkedit_vmaddr - layout.data_vmaddr
+    } else {
+        data_size
+    };
     if has_data {
         out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
             cmd: LC_SEGMENT_64, cmdsize: (SEG + n_data_secs * SEC) as u32,
             segname: name16("__DATA"),
-            vmaddr: data_vmaddr, vmsize: data_size,
+            vmaddr: data_vmaddr, vmsize: data_vmsize,
             fileoff: data_fileoff, filesize: data_size,
             maxprot: PROT_RW, initprot: PROT_RW, nsects: n_data_secs as u32, flags: 0,
         })});
         for (_, ms) in &data_secs {
+            // For BSS (S_ZEROFILL) sections, data is empty but virtual_size
+            // holds the actual zero-fill extent.  The file offset must be 0
+            // for zerofill sections (the Mach-O ABI requirement).
+            let is_zerofill = ms.flags == 0x01;
             out.extend_from_slice(unsafe { as_bytes(&Section64 {
                 sectname: name16(&ms.name), segname: name16("__DATA"),
-                addr: ms.vm_addr, size: ms.data.len() as u64,
-                offset: ms.file_offset as u32, align: ms.align,
+                addr: ms.vm_addr, size: ms.virtual_size as u64,
+                offset: if is_zerofill { 0 } else { ms.file_offset as u32 },
+                align: ms.align,
                 reloff: 0, nreloc: 0, flags: ms.flags,
                 reserved1: 0, reserved2: 0, reserved3: 0,
             })});

@@ -50,6 +50,10 @@ pub struct SecData {
     pub seg: String,
     pub name: String,
     pub data: Vec<u8>,
+    /// Virtual size of the section in memory. For regular sections this equals
+    /// data.len(). For S_ZEROFILL sections the data is empty but virtual_size
+    /// gives the actual zero-fill extent needed at runtime.
+    pub virtual_size: usize,
     pub align: u32,  // log2 alignment
     pub flags: u32,
     pub relocs: Vec<Reloc>,
@@ -146,6 +150,10 @@ fn parse_sections(file: &object::File<'_>, raw: &[u8]) -> Result<Vec<SecData>, S
         if seg == "__DWARF" { continue; }
 
         let data = sec.data().unwrap_or(&[]).to_vec();
+        // virtual_size is the extent the section occupies in memory.
+        // For S_ZEROFILL sections, sec.data() is empty but sec.size() gives
+        // the actual zero-fill size that must be reserved in the VM layout.
+        let virtual_size = sec.size() as usize;
         let byte_align = sec.align() as usize;
         let log2_align = if byte_align <= 1 { 0 } else { byte_align.trailing_zeros() };
 
@@ -153,7 +161,7 @@ fn parse_sections(file: &object::File<'_>, raw: &[u8]) -> Result<Vec<SecData>, S
         let flags = sec_flags(file, &sec);
 
         let relocs = parse_relocs(file, &sec, raw, &out, file.sections().count())?;
-        out.push(SecData { seg, name, data, align: log2_align, flags, relocs });
+        out.push(SecData { seg, name, data, virtual_size, align: log2_align, flags, relocs });
     }
     Ok(out)
 }

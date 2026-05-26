@@ -819,11 +819,13 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
 
     // Section: __DATA,__bss (optional, S_ZEROFILL, no file content)
     if has_bss {
-        // For MH_OBJECT the bss addr follows cstring in the flat address space.
-        let bss_addr = (cstring_off + cstring_size) as u64;
+        // Use addr=0 so that symbol n_value equals the section-relative offset
+        // directly.  parse_symbols in the linker computes:
+        //   offset = sym.address() - sec.address() = n_value - 0 = n_value
+        // which gives the correct section-relative byte offset for each BSS symbol.
         out.extend_from_slice(unsafe { as_bytes(&Section64 {
             sectname: name16("__bss"), segname: name16("__DATA"),
-            addr: bss_addr, size: bss_size as u64,
+            addr: 0, size: bss_size as u64,
             offset: 0, align: 3,
             reloff: 0, nreloc: 0,
             flags: S_ZEROFILL,

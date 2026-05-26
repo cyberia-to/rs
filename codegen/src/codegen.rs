@@ -3,9 +3,89 @@ use rustc_middle::mir::mono::MonoItem;
 use rustc_middle::ty::{self, TyCtxt};
 
 use crate::arm64::Arm64Backend;
-use crate::lir::LIROp;
+use crate::lir::{Label, LIROp, Reg};
 use crate::mir2lir::{MirToLir, StaticData, StaticReloc};
 use link::{CallReloc2, DataReloc, EmitInput, FnSymbol, RelocatableInput, StaticCodeReloc, StaticData as LinkData, emit_macho, emit_object};
+
+/// Generate LIR ops for the __trident_tls_get(key_ptr: *mut u64, size: usize) -> *mut u8 helper.
+///
+/// Lazily initialises a pthread_key_t slot and returns the per-thread data pointer:
+///   1. If *key_ptr == 0: call pthread_key_create(key_ptr, NULL) to create the key.
+///   2. Call pthread_getspecific(key) → ptr.
+///   3. If ptr == NULL: malloc(size), zero it, pthread_setspecific(key, ptr).
+///   4. Return ptr.
+///
+/// Callee-saved registers (x19-x24 = Reg(15)-Reg(20)) hold values across calls.
+/// External symbols (_pthread_key_create, _pthread_getspecific, _pthread_setspecific, _malloc)
+/// are resolved via libSystem stubs by the macho-linker; the monolithic path leaves them
+/// unpatched (TLS correctness requires Phase 2+).
+fn make_tls_get_ops() -> Vec<LIROp> {
+    let saved_kp = Reg(15); // x19 — saved key_ptr across calls
+    let saved_sz = Reg(16); // x20 — saved size across calls
+    let key      = Reg(17); // x21 — current pthread_key_t value
+    let new_ptr  = Reg(18); // x22 — per-thread data pointer
+    let cond     = Reg(19); // x23 — branch condition (0 or 1)
+    let zero     = Reg(20); // x24 — constant 0
+
+    vec![
+        LIROp::FnStart("__trident_tls_get".to_string()),
+        // Save args to callee-saved regs; x0/x1 are caller-saved.
+        LIROp::Move(saved_kp, Reg(0)),
+        LIROp::Move(saved_sz, Reg(1)),
+        LIROp::LoadImm(zero, 0),
+
+        // key = *key_ptr
+        LIROp::Load { dst: key, base: saved_kp, offset: 0 },
+        LIROp::Eq(cond, key, zero),
+        LIROp::Branch {
+            cond,
+            if_true:  Label::new("__tls_init"),
+            if_false: Label::new("__tls_have_key"),
+        },
+
+        // pthread_key_create(key_ptr, NULL)
+        LIROp::LabelDef(Label::new("__tls_init")),
+        LIROp::Move(Reg(0), saved_kp),
+        LIROp::LoadImm(Reg(1), 0),
+        LIROp::Call("_pthread_key_create".to_string()),
+        LIROp::Load { dst: key, base: saved_kp, offset: 0 },
+        LIROp::Jump(Label::new("__tls_have_key")),
+
+        // ptr = pthread_getspecific(key)
+        LIROp::LabelDef(Label::new("__tls_have_key")),
+        LIROp::Move(Reg(0), key),
+        LIROp::Call("_pthread_getspecific".to_string()),
+        LIROp::Move(new_ptr, Reg(0)),
+        LIROp::Eq(cond, new_ptr, zero),
+        LIROp::Branch {
+            cond,
+            if_true:  Label::new("__tls_alloc"),
+            if_false: Label::new("__tls_done"),
+        },
+
+        // malloc(size) + zero + pthread_setspecific(key, ptr)
+        LIROp::LabelDef(Label::new("__tls_alloc")),
+        LIROp::Move(Reg(0), saved_sz),
+        LIROp::Call("_malloc".to_string()),
+        LIROp::Move(new_ptr, Reg(0)),
+        LIROp::Move(Reg(0), new_ptr),
+        LIROp::Move(Reg(1), zero),
+        LIROp::Move(Reg(2), saved_sz),
+        LIROp::Call("__trident_memset".to_string()),
+        // Reload key in case memset clobbered x21 via a call (it won't — memset is a stub,
+        // but we reload defensively so the key is fresh from the key slot).
+        LIROp::Load { dst: key, base: saved_kp, offset: 0 },
+        LIROp::Move(Reg(0), key),
+        LIROp::Move(Reg(1), new_ptr),
+        LIROp::Call("_pthread_setspecific".to_string()),
+        LIROp::Jump(Label::new("__tls_done")),
+
+        LIROp::LabelDef(Label::new("__tls_done")),
+        LIROp::Move(Reg(0), new_ptr),
+        LIROp::Return,
+        LIROp::FnEnd,
+    ]
+}
 
 /// Everything produced by per-crate codegen, passed to join_codegen.
 pub struct TridentOutput {
@@ -112,9 +192,18 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         }
     }
 
-    // Emit writable BSS storage for each TLS variable.
-    for (sym, size) in &all_tls_vars {
-        all_statics.push(StaticData { name: sym.clone(), bytes: vec![0u8; *size as usize], writable: true });
+    // Emit 8-byte BSS key slot for each TLS variable.
+    // The per-thread data is lazily malloc'd by __trident_tls_get; this slot holds the
+    // pthread_key_t (0 = not yet created).
+    if !all_tls_vars.is_empty() {
+        for key_slot_sym in all_tls_vars.keys() {
+            all_statics.push(StaticData {
+                name: key_slot_sym.clone(),
+                bytes: vec![0u8; 8],
+                writable: true,
+            });
+        }
+        all_ops.extend(make_tls_get_ops());
     }
 
     let mut backend = Arm64Backend::new();

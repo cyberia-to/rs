@@ -539,16 +539,27 @@ impl<'tcx> MirToLir<'tcx> {
                 if dst != src { self.ops.push(LIROp::Move(dst, src)); }
             }
 
-            // ThreadLocalRef: for the monolithic single-binary path, implement as a
-            // process-global BSS static (correct for single-threaded programs).
+            // ThreadLocalRef: generate a pthread-key-based TLS access.
+            // __tls_key_<sym> is an 8-byte BSS slot holding the pthread_key_t (0 = not yet
+            // created). __trident_tls_get(key_ptr, size) lazily creates the key and returns
+            // the per-thread data pointer. The macho-linker path resolves _pthread_* via
+            // libSystem stubs; the monolithic path leaves those calls unresolved (TLS only
+            // works correctly through Phase 2+).
             mir::Rvalue::ThreadLocalRef(def_id) => {
-                let inst    = ty::Instance::mono(self.tcx, *def_id);
-                let sym     = self.tcx.symbol_name(inst).name.to_string();
-                let ty      = self.tcx.type_of(*def_id).instantiate_identity();
-                let size    = self.type_size(ty).max(1);
-                let storage = format!("__tls_{sym}");
-                self.tls_vars.insert(storage.clone(), size);
-                self.ops.push(LIROp::LoadAddr { dst, symbol: storage });
+                let inst     = ty::Instance::mono(self.tcx, *def_id);
+                let sym      = self.tcx.symbol_name(inst).name.to_string();
+                let ty       = self.tcx.type_of(*def_id).instantiate_identity();
+                let size     = self.type_size(ty).max(1);
+                let key_slot = format!("__tls_key_{sym}");
+                self.tls_vars.insert(key_slot.clone(), size);
+                let key_ptr = self.alloc_reg();
+                let sz_reg  = self.alloc_reg();
+                self.ops.push(LIROp::LoadAddr { dst: key_ptr, symbol: key_slot });
+                self.ops.push(LIROp::LoadImm(sz_reg, size));
+                self.ops.push(LIROp::Move(Reg(0), key_ptr));
+                self.ops.push(LIROp::Move(Reg(1), sz_reg));
+                self.ops.push(LIROp::Call("__trident_tls_get".to_string()));
+                self.ops.push(LIROp::Move(dst, Reg(0)));
             }
 
             _ => {

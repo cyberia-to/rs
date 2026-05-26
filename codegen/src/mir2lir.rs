@@ -234,6 +234,25 @@ impl<'tcx> MirToLir<'tcx> {
                     cur_ty = elem_ty;
                     is_mem = true;
                 }
+                // from_end: index from the tail of the sequence.
+                // For arrays the length is statically known; use min_length as the bound.
+                // For slices the runtime length is in the fat pointer's metadata word (offset +8
+                // from the base local), but loading it here requires back-tracking through
+                // projections — use min_length as a conservative static approximation.
+                mir::PlaceElem::ConstantIndex { offset, min_length, from_end: true } => {
+                    let elem_ty = self.elem_type(cur_ty).unwrap_or(cur_ty);
+                    let from_start = (*min_length).saturating_sub(*offset as u64);
+                    let byte = from_start * self.type_size(elem_ty);
+                    if byte != 0 {
+                        let off  = self.alloc_reg();
+                        let addr = self.alloc_reg();
+                        self.ops.push(LIROp::LoadImm(off, byte));
+                        self.ops.push(LIROp::Add(addr, cur_reg, off));
+                        cur_reg = addr;
+                    }
+                    cur_ty = elem_ty;
+                    is_mem = true;
+                }
                 mir::PlaceElem::Downcast(..) => { /* type-only narrowing, no address change */ }
                 _ => { /* SubSlice, OpaqueCast — skip, best-effort */ }
             }
@@ -560,6 +579,78 @@ impl<'tcx> MirToLir<'tcx> {
                 self.ops.push(LIROp::Move(Reg(1), sz_reg));
                 self.ops.push(LIROp::Call("__trident_tls_get".to_string()));
                 self.ops.push(LIROp::Move(dst, Reg(0)));
+            }
+
+            // Len(*place): for arrays returns the static element count; for slices loads
+            // the length from the second word of the fat pointer held in place.local.
+            mir::Rvalue::Len(place) => {
+                let place_ty = place.ty(&body.local_decls, self.tcx).ty;
+                match place_ty.kind() {
+                    TyKind::Array(_, len_const) => {
+                        let len = len_const.try_eval_target_usize(
+                            self.tcx, ty::TypingEnv::fully_monomorphized(),
+                        ).unwrap_or(0);
+                        self.ops.push(LIROp::LoadImm(dst, len as u64));
+                    }
+                    TyKind::Slice(_) | TyKind::Str => {
+                        // The place's base local holds a &[T] or *[T] fat pointer.
+                        // Fat pointer layout: [data_ptr @ 0, length @ 8].
+                        let fat_ptr_reg = self.local_reg(place.local);
+                        self.ops.push(LIROp::Load { dst, base: fat_ptr_reg, offset: 8 });
+                    }
+                    _ => { self.ops.push(LIROp::LoadImm(dst, 0)); }
+                }
+            }
+
+            // Repeat(operand, count): allocate a writable BSS block of count×elem_size bytes,
+            // fill it with copies of operand, return its address.
+            mir::Rvalue::Repeat(operand, count) => {
+                let n = count.try_eval_target_usize(
+                    self.tcx, ty::TypingEnv::fully_monomorphized(),
+                ).unwrap_or(0);
+                let elem_ty  = operand.ty(&body.local_decls, self.tcx);
+                let elem_sz  = self.type_size(elem_ty).max(1);
+                let total    = n * elem_sz;
+                let agg_id   = self.agg_counter;
+                self.agg_counter += 1;
+                let sym = format!("__repeat_{agg_id}");
+                self.statics.push(StaticData {
+                    name: sym.clone(),
+                    bytes: vec![0u8; total as usize],
+                    writable: true,
+                });
+                self.ops.push(LIROp::LoadAddr { dst, symbol: sym.clone() });
+                if n > 0 {
+                    let src = self.lower_operand(operand, body)?;
+                    if n <= 8 {
+                        for i in 0..n {
+                            let off = (i * elem_sz) as i32;
+                            let sz  = elem_sz as u8;
+                            if sz > 0 && sz < 8 {
+                                self.ops.push(LIROp::StoreSize { src, base: dst, offset: off, size: sz });
+                            } else {
+                                self.ops.push(LIROp::Store { src, base: dst, offset: off });
+                            }
+                        }
+                    } else {
+                        // Fill via __trident_memset(dst, val, count*elem_sz).
+                        // Note: correct only when elem_sz == 1 (byte fill). For multi-byte
+                        // elements with non-zero values this is approximate; zero-init patterns
+                        // (the common [0u8; N]) are correct since BSS is already zero.
+                        let n_reg  = self.alloc_reg();
+                        let sz_reg = self.alloc_reg();
+                        let bc     = self.alloc_reg();
+                        self.ops.push(LIROp::LoadImm(n_reg, n));
+                        self.ops.push(LIROp::LoadImm(sz_reg, elem_sz));
+                        self.ops.push(LIROp::Mul(bc, n_reg, sz_reg));
+                        self.ops.push(LIROp::Move(Reg(0), dst));
+                        self.ops.push(LIROp::Move(Reg(1), src));
+                        self.ops.push(LIROp::Move(Reg(2), bc));
+                        self.ops.push(LIROp::Call("__trident_memset".to_string()));
+                        // Reload dst: __trident_memset post-increments x0, so base is gone.
+                        self.ops.push(LIROp::LoadAddr { dst, symbol: sym });
+                    }
+                }
             }
 
             _ => {

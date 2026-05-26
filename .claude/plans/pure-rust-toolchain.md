@@ -218,6 +218,20 @@ The first is a pure-Rust toolchain on macOS. The second isn't. The Mach-O linker
 
 Each phase produces a usable artifact. Estimates use 1 session = 3 focused hours.
 
+## Implementation Status (as of 2026-05-26)
+
+| Phase | Code Status | Deliverable Status |
+|---|---|---|
+| 0 — Inventory | **COMPLETE** | `pure-rust-check` crate, 575 LOC |
+| 1 — macOS MVP | **Code complete** | 8 integration tests written; nightly-2025-11-26 toolchain not installed — cannot verify |
+| 2 — Mach-O linker | **Code complete** | macho-linker wired end-to-end; ripgrep not compiled — not verified |
+| 3 — Rust coverage | **Partial** | TLS ✓, atomics ✓, asm ✓, Len/Repeat rvalues ✓, unchecked intrinsics ✓; deliverable not met |
+| 4 — Darwin ABI | **darwin-sys written** | Not wired into std; libc still used; deliverable not met |
+
+Phase 3 gaps remaining: multi-byte Repeat fill correctness, float↔int cast (needs FP regs in LIR), rare statement kinds (non-blocking), deliverable verification.
+Phase 4 gap: requires nightly toolchain + modifying std source + `build-std` to verify.
+Phase 1/2 gap: nightly-2025-11-26 toolchain must be installed on this machine.
+
 ### Phase 0 — Inventory and gating (2 sessions)
 
 - Catalog every direct + transitive C/C++ dependency of cargo + rustc on macOS aarch64.

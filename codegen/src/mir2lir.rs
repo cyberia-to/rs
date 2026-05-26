@@ -1614,13 +1614,46 @@ impl<'tcx> MirToLir<'tcx> {
                 return Ok(true);
             }
 
-            // ── Unchecked / exact ops (same semantics as regular in our backend) ──
-            "unchecked_add" | "exact_div" => {
+            // ── Unchecked / exact arithmetic (same machine semantics in our backend) ──
+            "unchecked_add" | "unchecked_sub" | "unchecked_mul"
+            | "unchecked_div" | "unchecked_rem"
+            | "unchecked_shl" | "unchecked_shr"
+            | "exact_div" => {
                 if args.len() >= 2 {
                     let a = self.lower_operand(&args[0].node, body)?;
                     let b = self.lower_operand(&args[1].node, body)?;
                     let d = self.alloc_reg();
-                    let insn = if name == "unchecked_add" { LIROp::Add(d, a, b) } else { LIROp::SDiv(d, a, b) };
+                    let signed = substs.types().next()
+                        .map(|t| matches!(t.kind(), TyKind::Int(_)))
+                        .unwrap_or(false);
+                    let insn = match name {
+                        "unchecked_add"          => LIROp::Add(d, a, b),
+                        "unchecked_sub"          => LIROp::Sub(d, a, b),
+                        "unchecked_mul"          => LIROp::Mul(d, a, b),
+                        "unchecked_div" | "exact_div"
+                                                 => if signed { LIROp::SDiv(d,a,b) } else { LIROp::Div(d,a,b) },
+                        "unchecked_rem"          => LIROp::Rem(d, a, b),
+                        "unchecked_shl"          => LIROp::Shl(d, a, b),
+                        "unchecked_shr"          => if signed { LIROp::Sar(d,a,b) } else { LIROp::Shr(d,a,b) },
+                        _                        => unreachable!(),
+                    };
+                    self.ops.push(insn);
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }
+                        PlaceLoc::Mem(p)   => { self.ops.push(LIROp::Store { src: d, base: p, offset: 0 }); }
+                    }
+                }
+                if let Some(bb) = target { self.ops.push(LIROp::Jump(bb_label(*bb))); }
+                return Ok(true);
+            }
+
+            // ── Saturating arithmetic (wrapping in our backend; overflow is UB in safe code) ──
+            "saturating_add" | "saturating_sub" => {
+                if args.len() >= 2 {
+                    let a = self.lower_operand(&args[0].node, body)?;
+                    let b = self.lower_operand(&args[1].node, body)?;
+                    let d = self.alloc_reg();
+                    let insn = if name == "saturating_add" { LIROp::Add(d,a,b) } else { LIROp::Sub(d,a,b) };
                     self.ops.push(insn);
                     match self.lower_place(destination, body)? {
                         PlaceLoc::Reg(dst) => { if dst != d { self.ops.push(LIROp::Move(dst, d)); } }

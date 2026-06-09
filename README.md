@@ -1,5 +1,7 @@
 ---
+title: rs
 tags: cyber, rs, rust, language, research
+alias: Rs, Rustic, rustic, rs language
 icon: "\u2699\uFE0F"
 ---
 

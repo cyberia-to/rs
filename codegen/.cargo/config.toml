@@ -1,0 +1,4 @@
+[build]
+# Route -Z dump-mir output into the mir project's dump/ folder instead of
+# polluting the caller's working directory.
+rustflags = ["-Z", "dump-mir-dir=../../mir/dump"]

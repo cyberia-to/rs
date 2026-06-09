@@ -20,6 +20,10 @@ pub struct MergedSection {
     pub seg: String,
     pub name: String,
     pub data: Vec<u8>,
+    /// Total virtual size of the merged section.  For regular sections this
+    /// equals data.len().  For S_ZEROFILL (BSS) sections, data is empty but
+    /// virtual_size tracks how much zero-fill space must be reserved in VM.
+    pub virtual_size: usize,
     pub align: u32,       // log2 alignment
     pub flags: u32,
     pub vm_addr: u64,
@@ -77,10 +81,7 @@ pub fn perform(
 
     for (obj_idx, obj) in objects.iter().enumerate() {
         for (sec_idx, sec) in obj.sections.iter().enumerate() {
-            if sec.data.is_empty() && sec.relocs.is_empty() {
-                // Empty section with no relocs — still need to map it in case symbols
-                // reference it, but append nothing.
-            }
+            let is_zerofill = sec.flags == 0x01; // S_ZEROFILL
             let key = format!("{}:{}", sec.seg, sec.name);
             let merged_idx = if let Some(&i) = sec_map.get(&key) {
                 i
@@ -91,6 +92,7 @@ pub fn perform(
                     seg: sec.seg.clone(),
                     name: sec.name.clone(),
                     data: Vec::new(),
+                    virtual_size: 0,
                     align: sec.align,
                     flags: sec.flags,
                     vm_addr: 0,
@@ -100,13 +102,24 @@ pub fn perform(
                 i
             };
             let ms = &mut merged[merged_idx];
-            // Ensure alignment.
+            // Compute the alignment-padded offset within the merged section.
             let align_bytes = 1usize << sec.align;
-            let pad = align_bytes - (ms.data.len() % align_bytes);
-            let pad = if pad == align_bytes { 0 } else { pad };
-            let offset_in_merged = ms.data.len() + pad;
-            ms.data.resize(offset_in_merged, 0);
-            ms.data.extend_from_slice(&sec.data);
+            let offset_in_merged = if is_zerofill {
+                // BSS: track virtual_size but keep data empty.
+                let pad = align_bytes - (ms.virtual_size % align_bytes);
+                let pad = if pad == align_bytes { 0 } else { pad };
+                let off = ms.virtual_size + pad;
+                ms.virtual_size = off + sec.virtual_size;
+                off
+            } else {
+                let pad = align_bytes - (ms.data.len() % align_bytes);
+                let pad = if pad == align_bytes { 0 } else { pad };
+                let off = ms.data.len() + pad;
+                ms.data.resize(off, 0);
+                ms.data.extend_from_slice(&sec.data);
+                ms.virtual_size = ms.data.len();
+                off
+            };
             ms.align = ms.align.max(sec.align);
             ms.chunks.push(Chunk { obj_idx, sec_idx, offset_in_merged });
             obj_sec_map.insert((obj_idx, sec_idx), (merged_idx, offset_in_merged));
@@ -118,12 +131,13 @@ pub fn perform(
     // __TEXT,__stubs (if needed)
     let stubs_idx = if n_imports > 0 {
         let stubs_data = vec![0u8; n_imports * STUB_SIZE];
+        let stubs_len = stubs_data.len();
         let key = "__TEXT:__stubs".to_string();
         let i = merged.len();
         sec_map.insert(key, i);
         merged.push(MergedSection {
             seg: "__TEXT".into(), name: "__stubs".into(),
-            data: stubs_data, align: 2, // 4-byte aligned
+            data: stubs_data, virtual_size: stubs_len, align: 2,
             flags: 0x8000_0408, // S_SYMBOL_STUBS | PURE_INSTRUCTIONS | SOME_INSTRUCTIONS
             vm_addr: 0, file_offset: 0, chunks: Vec::new(),
         });
@@ -133,12 +147,13 @@ pub fn perform(
     // __DATA,__got (if needed)
     let got_idx = if n_imports > 0 {
         let got_data = vec![0u8; n_imports * GOT_ENTRY_SIZE];
+        let got_len = got_data.len();
         let key = "__DATA:__got".to_string();
         let i = merged.len();
         sec_map.insert(key, i);
         merged.push(MergedSection {
             seg: "__DATA".into(), name: "__got".into(),
-            data: got_data, align: 3, // 8-byte aligned
+            data: got_data, virtual_size: got_len, align: 3,
             flags: 0x0000_0006, // S_NON_LAZY_SYMBOL_POINTERS
             vm_addr: 0, file_offset: 0, chunks: Vec::new(),
         });
@@ -184,7 +199,7 @@ pub fn perform(
         // We take ownership by swapping with a dummy.
         let dummy = MergedSection {
             seg: String::new(), name: String::new(), data: Vec::new(),
-            align: 0, flags: 0, vm_addr: 0, file_offset: 0, chunks: Vec::new(),
+            virtual_size: 0, align: 0, flags: 0, vm_addr: 0, file_offset: 0, chunks: Vec::new(),
         };
         sorted_merged.push(std::mem::replace(&mut merged[old_i], dummy));
     }
@@ -267,8 +282,10 @@ pub fn perform(
         merged[i].file_offset = file_cursor;
         merged[i].vm_addr = vm_cursor;
 
+        // File cursor advances by data content (BSS has no file content).
         file_cursor += merged[i].data.len();
-        vm_cursor += merged[i].data.len() as u64;
+        // VM cursor advances by the virtual size (BSS reserves space in memory).
+        vm_cursor += merged[i].virtual_size as u64;
     }
 
     // Handle the case where there are no __DATA sections.

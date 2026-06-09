@@ -36,6 +36,9 @@ pub struct MirToLir<'tcx> {
     next_vreg:    u32,
     ops:          Vec<LIROp>,
     locals:       HashMap<mir::Local, Reg>,
+    /// Locals whose register holds a *pointer* to their value (memory-backed).
+    /// When lower_place encounters such a local with no projection, it returns PlaceLoc::Mem.
+    mem_locals:   std::collections::HashSet<mir::Local>,
     statics:      Vec<StaticData>,
     static_relocs: Vec<StaticReloc>,
     tls_vars:     HashMap<String, u64>,  // storage_sym → byte size
@@ -46,6 +49,7 @@ impl<'tcx> MirToLir<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) -> Self {
         Self {
             tcx, instance, next_vreg: 0, ops: Vec::new(), locals: HashMap::new(),
+            mem_locals: std::collections::HashSet::new(),
             statics: Vec::new(), static_relocs: Vec::new(),
             tls_vars: HashMap::new(), agg_counter: 0,
         }
@@ -76,6 +80,7 @@ impl<'tcx> MirToLir<'tcx> {
         self.instance = instance;
         self.ops.clear();
         self.locals.clear();
+        self.mem_locals.clear();
         self.next_vreg = 0;
 
         let fn_name = self.tcx.symbol_name(instance).name.to_string();
@@ -83,12 +88,60 @@ impl<'tcx> MirToLir<'tcx> {
 
         // ABI: local 0 = return place, 1..=arg_count = args → x0..xN
         let arg_count = body.arg_count;
+        // Track which arm64 register slots have been consumed by arguments.
+        // ARM64 AAPCS64: each arg takes one register slot per 8-byte word.
+        // Composite types (structs, enums) > 8 bytes are passed by pointer if > 16 bytes,
+        // or split across consecutive registers if ≤ 16 bytes.
+        // For simplicity we use a per-arg reg slot counter.
+
+        // Pre-compute total register slots consumed by all args, so we can
+        // allocate scratch registers above the arg range (avoids clobbering).
+        let mut total_arg_slots = 0u32;
         for i in 1..=arg_count {
             let local = mir::Local::from_usize(i);
-            self.locals.insert(local, Reg((i - 1) as u32));
+            let arg_ty = body.local_decls[local].ty;
+            let arg_size = self.type_size(arg_ty);
+            total_arg_slots += if arg_size <= 8 { 1 } else { ((arg_size + 7) / 8) as u32 };
+        }
+        // Start virtual register allocator ABOVE all arg registers.
+        self.next_vreg = total_arg_slots.max(15);
+
+        let mut reg_slot = 0u32;
+        for i in 1..=arg_count {
+            let local = mir::Local::from_usize(i);
+            let arg_ty = body.local_decls[local].ty;
+            let arg_size = self.type_size(arg_ty);
+            let slots = if arg_size <= 8 { 1u32 } else { ((arg_size + 7) / 8) as u32 };
+            // If the argument is a composite type occupying >1 register slot, spill it
+            // to a writable memory location so Field projections work correctly.
+            if slots > 1 && self.is_composite_type(arg_ty) {
+                // Allocate a BSS static for the spill slot.
+                let spill_sym = format!("__arg_spill_{}_{}", self.agg_counter, i);
+                self.agg_counter += 1;
+                self.statics.push(StaticData {
+                    name: spill_sym.clone(),
+                    bytes: vec![0u8; arg_size as usize],
+                    writable: true,
+                });
+                // Allocate scratch register above the arg range (safe: next_vreg >= total_arg_slots).
+                let ptr_reg = self.alloc_reg();
+                self.ops.push(LIROp::LoadAddr { dst: ptr_reg, symbol: spill_sym });
+                // Store each argument register slot into the spill area.
+                for slot in 0..slots {
+                    let src_reg = Reg(reg_slot + slot);
+                    let off = (slot * 8) as i32;
+                    self.ops.push(LIROp::Store { src: src_reg, base: ptr_reg, offset: off });
+                }
+                // Map the local to the pointer to the spill area.
+                self.locals.insert(local, ptr_reg);
+                // Mark as memory-backed so lower_place treats it as Mem.
+                self.mem_locals.insert(local);
+            } else {
+                self.locals.insert(local, Reg(reg_slot));
+            }
+            reg_slot += slots;
         }
         self.locals.insert(mir::Local::from_usize(0), Reg(0));
-        self.next_vreg = arg_count.max(15) as u32;
 
         for (bb_idx, bb_data) in body.basic_blocks.iter_enumerated() {
             self.ops.push(LIROp::LabelDef(Label::new(format!("bb{}", bb_idx.index()))));
@@ -111,6 +164,21 @@ impl<'tcx> MirToLir<'tcx> {
     ) -> Result<(), String> {
         match &stmt.kind {
             mir::StatementKind::Assign(box (place, rvalue)) => {
+                // Special case: composite aggregate (enum/struct with size > 8 bytes) assigned
+                // to a simple local place (no projection).  Materialize to a BSS static and
+                // mark the local as memory-backed, so downstream code can find its fields.
+                if place.projection.is_empty()
+                    && !self.mem_locals.contains(&place.local)
+                {
+                    let place_ty = place.ty(&body.local_decls, self.tcx).ty;
+                    if self.type_size(place_ty) > 8 && self.is_composite_type(place_ty) {
+                        let local = place.local;
+                        let ptr_reg = self.lower_composite_aggregate(rvalue, place_ty, body)?;
+                        self.locals.insert(local, ptr_reg);
+                        self.mem_locals.insert(local);
+                        return Ok(());
+                    }
+                }
                 match self.lower_place(place, body)? {
                     PlaceLoc::Reg(dst) => self.lower_rvalue_into(dst, rvalue, body)?,
                     PlaceLoc::Mem(ptr) => {
@@ -141,6 +209,84 @@ impl<'tcx> MirToLir<'tcx> {
         Ok(())
     }
 
+    // ── Composite aggregate materialization ────────────────────────────────
+
+    /// Materialize a composite rvalue (enum or struct larger than 8 bytes) into a
+    /// freshly allocated writable BSS static.  Returns the register holding the
+    /// pointer to that static.  The caller is responsible for marking the target
+    /// local as a mem_local.
+    fn lower_composite_aggregate(
+        &mut self,
+        rvalue: &mir::Rvalue<'tcx>,
+        place_ty: ty::Ty<'tcx>,
+        body: &mir::Body<'tcx>,
+    ) -> Result<Reg, String> {
+        let size = self.type_size(place_ty) as usize;
+        let sym = format!("__cagg_{}", self.agg_counter);
+        self.agg_counter += 1;
+        self.statics.push(StaticData {
+            name: sym.clone(),
+            bytes: vec![0u8; size],
+            writable: true,
+        });
+        let ptr = self.alloc_reg();
+        self.ops.push(LIROp::LoadAddr { dst: ptr, symbol: sym });
+
+        match rvalue {
+            mir::Rvalue::Aggregate(kind, fields) => {
+                use rustc_abi::Variants;
+                // Determine variant index and write the discriminant if it's an enum.
+                let variant_idx: Option<rustc_abi::VariantIdx> = match kind.as_ref() {
+                    mir::AggregateKind::Adt(_, variant_idx, ..) => {
+                        // Write discriminant at offset 0 (4-byte i32 tag).
+                        let disc_val = variant_idx.as_u32() as u64;
+                        let tmp = self.alloc_reg();
+                        self.ops.push(LIROp::LoadImm(tmp, disc_val));
+                        self.ops.push(LIROp::StoreSize { src: tmp, base: ptr, offset: 0, size: 4 });
+                        Some(*variant_idx)
+                    }
+                    _ => None,
+                };
+
+                // Write each field at its correct byte offset.
+                for (idx, _) in fields.iter_enumerated() {
+                    let field_operand = &fields[idx];
+                    let field_ty = field_operand.ty(&body.local_decls, self.tcx);
+                    let field_offset = self.field_byte_offset_with_variant(
+                        place_ty, idx.as_usize(), variant_idx,
+                    ) as i32;
+                    let src = self.lower_operand(field_operand, body)?;
+                    let fsz = self.type_size(field_ty) as u8;
+                    if fsz > 0 && fsz < 8 {
+                        self.ops.push(LIROp::StoreSize { src, base: ptr, offset: field_offset, size: fsz });
+                    } else {
+                        self.ops.push(LIROp::Store { src, base: ptr, offset: field_offset });
+                    }
+                }
+            }
+            // For Use/Copy of another composite local, copy its bytes register-by-register.
+            mir::Rvalue::Use(operand) => {
+                let src_ptr = self.lower_operand(operand, body)?;
+                // Copy each 8-byte slot.
+                let slots = (size + 7) / 8;
+                for slot in 0..slots {
+                    let tmp = self.alloc_reg();
+                    let off = (slot * 8) as i32;
+                    self.ops.push(LIROp::Load { dst: tmp, base: src_ptr, offset: off });
+                    self.ops.push(LIROp::Store { src: tmp, base: ptr, offset: off });
+                }
+            }
+            // Fallback: use standard rvalue lowering which puts a value or pointer in tmp,
+            // then store it as the first slot.
+            _ => {
+                let tmp = self.alloc_reg();
+                self.lower_rvalue_into(tmp, rvalue, body)?;
+                self.ops.push(LIROp::Store { src: tmp, base: ptr, offset: 0 });
+            }
+        }
+        Ok(ptr)
+    }
+
     // ── Place lowering ─────────────────────────────────────────────────────
 
     fn lower_place(
@@ -149,12 +295,19 @@ impl<'tcx> MirToLir<'tcx> {
         body: &mir::Body<'tcx>,
     ) -> Result<PlaceLoc, String> {
         if place.projection.is_empty() {
+            if self.mem_locals.contains(&place.local) {
+                return Ok(PlaceLoc::Mem(self.local_reg(place.local)));
+            }
             return Ok(PlaceLoc::Reg(self.local_reg(place.local)));
         }
 
         let mut cur_reg = self.local_reg(place.local);
         let mut cur_ty  = body.local_decls[place.local].ty;
-        let mut is_mem  = false;
+        // If the local is memory-backed (e.g. spilled composite arg), start in Mem mode.
+        let mut is_mem  = self.mem_locals.contains(&place.local);
+        // When we enter a Downcast, track which variant index we're in so that
+        // Field projections can use the variant's own layout for offset calculation.
+        let mut downcast_variant: Option<(ty::Ty<'tcx>, rustc_abi::VariantIdx)> = None;
 
         for proj in place.projection.iter() {
             match proj {
@@ -166,11 +319,14 @@ impl<'tcx> MirToLir<'tcx> {
                         TyKind::Adt(..) => cur_ty, // box — treat as pointer
                         _ => cur_ty,
                     };
+                    downcast_variant = None;
                     is_mem = true;
                     // No instruction: cur_reg already IS the address.
                 }
                 mir::PlaceElem::Field(field_idx, field_ty) => {
-                    let offset = self.field_byte_offset(cur_ty, field_idx.as_usize());
+                    let offset = self.field_byte_offset_with_variant(
+                        cur_ty, field_idx.as_usize(), downcast_variant.map(|(_, v)| v));
+                    downcast_variant = None;
                     if !is_mem {
                         // Base is a register-valued aggregate (e.g., CheckedBinaryOp result).
                         // Extract the field by shifting/masking rather than memory access.
@@ -253,7 +409,12 @@ impl<'tcx> MirToLir<'tcx> {
                     cur_ty = elem_ty;
                     is_mem = true;
                 }
-                mir::PlaceElem::Downcast(..) => { /* type-only narrowing, no address change */ }
+                mir::PlaceElem::Downcast(_, variant_idx) => {
+                    // Type-only narrowing — no address change.
+                    // Record which variant we're in so Field projections compute
+                    // offsets relative to the variant layout.
+                    downcast_variant = Some((cur_ty, variant_idx));
+                }
                 _ => { /* SubSlice, OpaqueCast — skip, best-effort */ }
             }
         }
@@ -285,6 +446,15 @@ impl<'tcx> MirToLir<'tcx> {
     // ── Layout helpers ─────────────────────────────────────────────────────
 
     fn field_byte_offset(&self, ty: ty::Ty<'tcx>, field_idx: usize) -> u64 {
+        self.field_byte_offset_with_variant(ty, field_idx, None)
+    }
+
+    fn field_byte_offset_with_variant(
+        &self,
+        ty: ty::Ty<'tcx>,
+        field_idx: usize,
+        variant: Option<rustc_abi::VariantIdx>,
+    ) -> u64 {
         // Fat pointer (ref/rawptr to a dyn Trait or slice): two pointer-sized fields.
         // Field 0 = data pointer (offset 0), field 1 = vtable/length pointer (offset 8).
         // layout_of fails for unsized pointees, so handle fat pointers explicitly.
@@ -292,9 +462,44 @@ impl<'tcx> MirToLir<'tcx> {
             return if field_idx == 0 { 0 } else { 8 };
         }
         let env = ty::TypingEnv::fully_monomorphized();
-        self.tcx.layout_of(env.as_query_input(ty))
-            .map(|l| l.fields.offset(field_idx).bytes())
-            .unwrap_or(0)
+        let layout_result = self.tcx.layout_of(env.as_query_input(ty));
+        match layout_result {
+            Ok(l) => {
+                // For enum types accessed via a Downcast projection, use the variant
+                // layout to get the correct field offset within the payload area.
+                if let Some(v_idx) = variant {
+                    // Try to get the variant's layout.
+                    use rustc_abi::Variants;
+                    match &l.variants {
+                        Variants::Multiple { variants, .. } => {
+                            let v_layout = &variants[v_idx];
+                            // v_layout.fields gives offsets relative to the variant's
+                            // own origin.  But the variant itself is positioned
+                            // at the enum's "tag + padding" base, which is captured
+                            // in v_layout's offset within the outer layout.
+                            // The simplest correct path: ask for the field offset
+                            // from the variant TyAndLayout.
+                            if field_idx < v_layout.fields.count() {
+                                return v_layout.fields.offset(field_idx).bytes();
+                            }
+                            return 0;
+                        }
+                        Variants::Single { .. } => {
+                            // Single-variant enum or after the optimizer collapsed it.
+                            // Fall through to top-level field offset.
+                        }
+                        _ => {}
+                    }
+                }
+                // Top-level struct or non-variant field access.
+                if field_idx < l.fields.count() {
+                    l.fields.offset(field_idx).bytes()
+                } else {
+                    0
+                }
+            }
+            Err(_) => 0,
+        }
     }
 
     /// Returns true if `ty` is a fat-pointer type (&dyn Trait, *const dyn Trait,
@@ -332,6 +537,12 @@ impl<'tcx> MirToLir<'tcx> {
             TyKind::Array(et, _) | TyKind::Slice(et) => Some(*et),
             _ => None,
         }
+    }
+
+    /// Returns true if the type is a composite (struct/enum/tuple) that may require
+    /// multiple register slots and needs to be spilled to memory for field access.
+    fn is_composite_type(&self, ty: ty::Ty<'tcx>) -> bool {
+        matches!(ty.kind(), TyKind::Adt(..) | TyKind::Tuple(..) | TyKind::Array(..))
     }
 
     // ── Rvalue lowering ────────────────────────────────────────────────────
@@ -535,9 +746,20 @@ impl<'tcx> MirToLir<'tcx> {
             }
 
             mir::Rvalue::Discriminant(place) => {
-                // Read the discriminant of an enum. For C-like enums it's at offset 0.
-                let ptr = self.lower_place_to_reg(place, body)?;
-                self.ops.push(LIROp::Load { dst, base: ptr, offset: 0 });
+                // Read the discriminant of an enum. The discriminant is at byte offset 0
+                // of the enum's memory layout. We need the address of the enum, not its
+                // value — use lower_place to get the PlaceLoc and handle both cases.
+                match self.lower_place(place, body)? {
+                    PlaceLoc::Mem(ptr) => {
+                        // Load discriminant (4-byte i32, zero-extended to 64 bits).
+                        self.ops.push(LIROp::LoadSize { dst, base: ptr, offset: 0, size: 4 });
+                    }
+                    PlaceLoc::Reg(r) => {
+                        // Enum is in a register (unlikely for composite, but handle it).
+                        // Discriminant is in the low 32 bits.
+                        self.ops.push(LIROp::ZeroExt { dst, src: r, from_bits: 32 });
+                    }
+                }
             }
 
             // NullaryOp in this rustc version only carries RuntimeChecks (ub_checks etc.).
@@ -696,6 +918,47 @@ impl<'tcx> MirToLir<'tcx> {
             // All pointer/transmute/fn-ptr casts: same bit pattern, just move.
             _ => {
                 if dst != src { self.ops.push(LIROp::Move(dst, src)); }
+            }
+        }
+    }
+
+    /// Get the raw memory pointer for a composite operand (mem-backed place or constant).
+    /// For mem_locals, returns the pointer register directly without loading.
+    /// For non-mem-backed places of composite type, spills to a new BSS static first.
+    fn lower_composite_arg_ptr(
+        &mut self,
+        operand: &mir::Operand<'tcx>,
+        body: &mir::Body<'tcx>,
+    ) -> Result<Reg, String> {
+        match operand {
+            mir::Operand::Move(place) | mir::Operand::Copy(place) => {
+                if place.projection.is_empty() && self.mem_locals.contains(&place.local) {
+                    // Already memory-backed; local_reg holds the pointer.
+                    return Ok(self.local_reg(place.local));
+                }
+                // Not memory-backed yet — spill to BSS.
+                let ty = place.ty(&body.local_decls, self.tcx).ty;
+                let size = self.type_size(ty) as usize;
+                let sym = format!("__carg_{}", self.agg_counter);
+                self.agg_counter += 1;
+                self.statics.push(StaticData {
+                    name: sym.clone(),
+                    bytes: vec![0u8; size],
+                    writable: true,
+                });
+                let ptr = self.alloc_reg();
+                self.ops.push(LIROp::LoadAddr { dst: ptr, symbol: sym });
+                // Copy slots from the operand's register(s) into BSS.
+                // Since it's not mem-backed, it may just be a single register value.
+                let val = self.lower_place_to_reg(place, body)?;
+                self.ops.push(LIROp::Store { src: val, base: ptr, offset: 0 });
+                Ok(ptr)
+            }
+            mir::Operand::Constant(_) => {
+                // Constant composite — lower via standard path, then if the result
+                // is a pointer (BSS from intern_alloc), return it directly.
+                let val = self.lower_operand(operand, body)?;
+                Ok(val)
             }
         }
     }
@@ -969,11 +1232,29 @@ impl<'tcx> MirToLir<'tcx> {
                 };
 
                 // Move arguments into x0..xN.
-                for (i, arg) in args.iter().enumerate() {
-                    let src = self.lower_operand(&arg.node, body)?;
-                    if src.0 != i as u32 {
-                        self.ops.push(LIROp::Move(Reg(i as u32), src));
+                // For composite types (size > 8 bytes), the arg is memory-backed:
+                // expand it into consecutive register slots by loading 8-byte chunks.
+                let mut reg_slot = 0u32;
+                for arg in args.iter() {
+                    let arg_ty = arg.node.ty(&body.local_decls, self.tcx);
+                    let arg_size = self.type_size(arg_ty);
+                    let slots = if arg_size <= 8 { 1u32 } else { ((arg_size + 7) / 8) as u32 };
+
+                    if slots > 1 && self.is_composite_type(arg_ty) {
+                        // Arg lives in memory; get the backing pointer without loading.
+                        let ptr = self.lower_composite_arg_ptr(&arg.node, body)?;
+                        for slot in 0..slots {
+                            let off = (slot * 8) as i32;
+                            let dst_reg = Reg(reg_slot + slot);
+                            self.ops.push(LIROp::Load { dst: dst_reg, base: ptr, offset: off });
+                        }
+                    } else {
+                        let src = self.lower_operand(&arg.node, body)?;
+                        if src.0 != reg_slot {
+                            self.ops.push(LIROp::Move(Reg(reg_slot), src));
+                        }
                     }
+                    reg_slot += slots;
                 }
 
                 // Emit the call.

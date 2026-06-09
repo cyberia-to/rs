@@ -55,13 +55,17 @@ pub fn resolve(
                 kind: SymKind::Defined { obj_idx, sec_idx, offset: sym.offset },
             };
             if let Some(prev) = table.insert(sym.name.clone(), entry) {
-                // Duplicate definition: keep the first, warn.
+                // Duplicate definition: keep the first (first wins).
                 if let SymKind::Defined { obj_idx: prev_obj, .. } = prev.kind {
-                    eprintln!(
-                        "warning: duplicate symbol '{}' in {} and {}; keeping first",
-                        sym.name, objects[prev_obj].source, obj.source
-                    );
-                    // Re-insert the original.
+                    // Only warn for global symbols; local helpers like __trident_memcpy
+                    // appear in every object and should be deduplicated silently.
+                    if sym.is_global {
+                        eprintln!(
+                            "warning: duplicate symbol '{}' in {} and {}; keeping first",
+                            sym.name, objects[prev_obj].source, obj.source
+                        );
+                    }
+                    // Re-insert the original (first wins).
                     table.insert(sym.name.clone(), prev);
                 }
             }

@@ -121,3 +121,19 @@ run_exit_test asm asm.rs 42
 
 # ── Test 8: closure ───────────────────────────────────────────────────
 run_exit_test closure closure.rs 42
+
+# ── Test 9: multi_obj ────────────────────────────────────────────────────
+echo "==> Compiling multi_obj_helper.rs (obj)..."
+"$NIGHTLY_RUSTC" -Z codegen-backend="$DYLIB" --edition 2021 \
+    --target aarch64-apple-darwin -C panic=abort --emit=obj \
+    -o "$OUT_DIR/helper.o" "$SCRIPT_DIR/multi_obj_helper.rs" 2>&1
+echo "==> Compiling multi_obj_main.rs (obj)..."
+"$NIGHTLY_RUSTC" -Z codegen-backend="$DYLIB" --edition 2021 \
+    --target aarch64-apple-darwin -C panic=abort --emit=obj \
+    -o "$OUT_DIR/multi_main.o" "$SCRIPT_DIR/multi_obj_main.rs" 2>&1
+ML="$CODEGEN_DIR/../target/debug/macho-linker"
+echo "==> Linking multi-object..."
+"$ML" -o "$OUT_DIR/multi_obj" "$OUT_DIR/helper.o" "$OUT_DIR/multi_main.o" -lSystem 2>&1
+CODE=0; "$OUT_DIR/multi_obj" || CODE=$?
+if [ "$CODE" -eq 42 ]; then echo "PASS: multi_obj — exit code 42"
+else echo "FAIL: multi_obj — expected 42, got $CODE"; exit 1; fi

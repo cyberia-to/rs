@@ -322,6 +322,7 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
             .map(|r| DataReloc { adrp_offset: r.adrp_offset, add_offset: r.add_offset, symbol: r.symbol.clone() })
             .collect(),
         fn_syms,
+        static_relocs: link_static_relocs.clone(),
     };
     let object = emit_object(&rel_input);
 

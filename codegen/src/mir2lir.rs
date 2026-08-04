@@ -6,6 +6,7 @@ use rustc_middle::mir;
 use rustc_middle::mir::ConstValue;
 use rustc_middle::mir::interpret::{GlobalAlloc, Scalar};
 use rustc_middle::ty::{self, Instance, TyCtxt, TyKind};
+use rustc_middle::ty::adjustment::PointerCoercion;
 
 use crate::lir::{Label, LIROp, Reg};
 
@@ -397,7 +398,7 @@ impl<'tcx> MirToLir<'tcx> {
                 // projections — use min_length as a conservative static approximation.
                 mir::PlaceElem::ConstantIndex { offset, min_length, from_end: true } => {
                     let elem_ty = self.elem_type(cur_ty).unwrap_or(cur_ty);
-                    let from_start = (*min_length).saturating_sub(*offset as u64);
+                    let from_start = min_length.saturating_sub(offset);
                     let byte = from_start * self.type_size(elem_ty);
                     if byte != 0 {
                         let off  = self.alloc_reg();
@@ -803,33 +804,10 @@ impl<'tcx> MirToLir<'tcx> {
                 self.ops.push(LIROp::Move(dst, Reg(0)));
             }
 
-            // Len(*place): for arrays returns the static element count; for slices loads
-            // the length from the second word of the fat pointer held in place.local.
-            mir::Rvalue::Len(place) => {
-                let place_ty = place.ty(&body.local_decls, self.tcx).ty;
-                match place_ty.kind() {
-                    TyKind::Array(_, len_const) => {
-                        let len = len_const.try_eval_target_usize(
-                            self.tcx, ty::TypingEnv::fully_monomorphized(),
-                        ).unwrap_or(0);
-                        self.ops.push(LIROp::LoadImm(dst, len as u64));
-                    }
-                    TyKind::Slice(_) | TyKind::Str => {
-                        // The place's base local holds a &[T] or *[T] fat pointer.
-                        // Fat pointer layout: [data_ptr @ 0, length @ 8].
-                        let fat_ptr_reg = self.local_reg(place.local);
-                        self.ops.push(LIROp::Load { dst, base: fat_ptr_reg, offset: 8 });
-                    }
-                    _ => { self.ops.push(LIROp::LoadImm(dst, 0)); }
-                }
-            }
-
             // Repeat(operand, count): allocate a writable BSS block of count×elem_size bytes,
             // fill it with copies of operand, return its address.
             mir::Rvalue::Repeat(operand, count) => {
-                let n = count.try_eval_target_usize(
-                    self.tcx, ty::TypingEnv::fully_monomorphized(),
-                ).unwrap_or(0);
+                let n = count.try_to_target_usize(self.tcx).unwrap_or(0);
                 let elem_ty  = operand.ty(&body.local_decls, self.tcx);
                 let elem_sz  = self.type_size(elem_ty).max(1);
                 let total    = n * elem_sz;
@@ -915,7 +893,77 @@ impl<'tcx> MirToLir<'tcx> {
                     if dst != src { self.ops.push(LIROp::Move(dst, src)); }
                 }
             }
-            // All pointer/transmute/fn-ptr casts: same bit pattern, just move.
+            // &ConcreteType → &dyn Trait: build a fat pointer {data_ptr, vtable_ptr} in BSS.
+            mir::CastKind::PointerCoercion(PointerCoercion::Unsize, _) => {
+                if let Some(vtable_sym) = self.make_vtable_for_unsize(from_ty, _to_ty) {
+                    // If the vtable is in BSS (writable), initialize it now with ADRP+ADD
+                    // addresses. This is position-independent and works correctly with ASLR.
+                    let vtable_is_bss = self.statics.iter()
+                        .find(|s| s.name == vtable_sym)
+                        .map(|s| s.writable)
+                        .unwrap_or(false);
+                    if vtable_is_bss {
+                        // Collect init data before borrowing self mutably.
+                        let vtable_bytes: Vec<u8> = self.statics.iter()
+                            .find(|s| s.name == vtable_sym)
+                            .map(|s| s.bytes.clone())
+                            .unwrap_or_default();
+                        let fn_relocs: Vec<(usize, String)> = self.static_relocs.iter()
+                            .filter(|r| r.static_name == vtable_sym)
+                            .map(|r| (r.byte_offset, r.fn_symbol.clone()))
+                            .collect();
+                        let fn_offsets: std::collections::HashSet<usize> =
+                            fn_relocs.iter().map(|(o, _)| *o).collect();
+
+                        let r_vt = self.alloc_reg();
+                        self.ops.push(LIROp::LoadAddr { dst: r_vt, symbol: vtable_sym.clone() });
+
+                        // Write constant fields (size, align, etc.) that are non-zero.
+                        let mut off = 0usize;
+                        while off + 8 <= vtable_bytes.len() {
+                            if !fn_offsets.contains(&off) {
+                                let val = u64::from_le_bytes(
+                                    vtable_bytes[off..off + 8].try_into().unwrap()
+                                );
+                                if val != 0 {
+                                    let r_v = self.alloc_reg();
+                                    self.ops.push(LIROp::LoadImm(r_v, val));
+                                    self.ops.push(LIROp::Store {
+                                        src: r_v, base: r_vt, offset: off as i32,
+                                    });
+                                }
+                            }
+                            off += 8;
+                        }
+                        // Write function pointer slots via ADRP+ADD (position-independent).
+                        for (byte_off, fn_sym) in fn_relocs {
+                            let r_fn = self.alloc_reg();
+                            self.ops.push(LIROp::LoadAddr { dst: r_fn, symbol: fn_sym });
+                            self.ops.push(LIROp::Store {
+                                src: r_fn, base: r_vt, offset: byte_off as i32,
+                            });
+                        }
+                    }
+
+                    let fp_sym = format!("__fat_ptr_{}", self.agg_counter);
+                    self.agg_counter += 1;
+                    self.statics.push(StaticData {
+                        name: fp_sym.clone(), bytes: vec![0u8; 16], writable: true,
+                    });
+                    let fp_addr = self.alloc_reg();
+                    self.ops.push(LIROp::LoadAddr { dst: fp_addr, symbol: fp_sym });
+                    // Store the concrete data pointer at offset 0.
+                    self.ops.push(LIROp::Store { src, base: fp_addr, offset: 0 });
+                    // Store the vtable pointer at offset 8.
+                    let vt = self.alloc_reg();
+                    self.ops.push(LIROp::LoadAddr { dst: vt, symbol: vtable_sym });
+                    self.ops.push(LIROp::Store { src: vt, base: fp_addr, offset: 8 });
+                    if dst != fp_addr { self.ops.push(LIROp::Move(dst, fp_addr)); }
+                } else {
+                    if dst != src { self.ops.push(LIROp::Move(dst, src)); }
+                }
+            }
+            // All other pointer/transmute/fn-ptr casts: same bit pattern, just move.
             _ => {
                 if dst != src { self.ops.push(LIROp::Move(dst, src)); }
             }
@@ -1020,11 +1068,16 @@ impl<'tcx> MirToLir<'tcx> {
     fn intern_alloc(&mut self, alloc_id: rustc_middle::mir::interpret::AllocId, _ty: ty::Ty<'tcx>) -> Option<String> {
         if let GlobalAlloc::Memory(alloc) = self.tcx.global_alloc(alloc_id) {
             let name = format!("__anon_const_{:?}", alloc_id);
+            // Deduplicate: vtable allocs shared across coercions must only emit once.
+            if self.statics.iter().any(|s| s.name == name) {
+                return Some(name);
+            }
             let inner = alloc.inner();
             let len = inner.len();
             let mut bytes = inner.inspect_with_uninit_and_ptr_outside_interpreter(0..len).to_vec();
             // Collect pointer-sized relocations (function pointers in vtables, etc.).
             // Each provenance entry maps a byte offset to an alloc that may be a function.
+            let relocs_before = self.static_relocs.len();
             for (offset, prov) in inner.provenance().ptrs().iter() {
                 let byte_off = offset.bytes() as usize;
                 if byte_off + 8 > bytes.len() { continue; }
@@ -1054,10 +1107,84 @@ impl<'tcx> MirToLir<'tcx> {
                     _ => {}
                 }
             }
-            self.statics.push(StaticData { name: name.clone(), bytes, writable: false });
+            // Vtables with fn-ptr slots need runtime initialization (LoadAddr = ADRP+ADD,
+            // position-independent). Mark them writable (BSS) so they can be written at runtime.
+            let has_fn_ptrs = self.static_relocs.len() > relocs_before;
+            self.statics.push(StaticData { name: name.clone(), bytes, writable: has_fn_ptrs });
             return Some(name);
         }
         None
+    }
+
+    /// Build a vtable for a `&ConcreteType → &dyn Trait` coercion and intern it as a static.
+    /// Returns the symbol name of the vtable, or None if the types don't match the expected shape.
+    fn make_vtable_for_unsize(&mut self, from_ty: ty::Ty<'tcx>, to_ty: ty::Ty<'tcx>) -> Option<String> {
+        let concrete_ty = match from_ty.kind() {
+            TyKind::Ref(_, inner, _) | TyKind::RawPtr(inner, _) => *inner,
+            _ => return None,
+        };
+        let to_pointee = match to_ty.kind() {
+            TyKind::Ref(_, inner, _) | TyKind::RawPtr(inner, _) => *inner,
+            _ => return None,
+        };
+        let preds = match to_pointee.kind() {
+            TyKind::Dynamic(preds, ..) => preds,
+            _ => return None,
+        };
+        // skip_binder is correct at full monomorphization: no unresolved bound regions remain.
+        let existential_trait_ref = preds.principal().map(|p| p.skip_binder());
+        let vtable_alloc_id = self.tcx.vtable_allocation((concrete_ty, existential_trait_ref));
+        self.intern_alloc(vtable_alloc_id, concrete_ty)
+    }
+
+    /// If `func` resolves to a virtual dispatch (`InstanceKind::Virtual`), emit LIROps that load
+    /// the concrete function pointer from the vtable BEFORE args are moved into x0..xN.
+    /// Returns the register holding the function pointer, or None for non-virtual calls.
+    fn resolve_virtual_fn_ptr(
+        &mut self,
+        func: &mir::Operand<'tcx>,
+        args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
+        body: &mir::Body<'tcx>,
+    ) -> Result<Option<Reg>, String> {
+        let mir::Operand::Constant(c) = func else { return Ok(None); };
+        let TyKind::FnDef(def_id, substs) = c.const_.ty().kind() else { return Ok(None); };
+        let mono_substs = self.tcx.instantiate_and_normalize_erasing_regions(
+            self.instance.args,
+            ty::TypingEnv::fully_monomorphized(),
+            ty::EarlyBinder::bind(*substs),
+        );
+        let inst_opt = Instance::try_resolve(
+            self.tcx, ty::TypingEnv::fully_monomorphized(), *def_id, mono_substs,
+        ).ok().flatten().or_else(|| {
+            if self.tcx.generics_of(*def_id).count() == 0 {
+                Some(Instance::mono(self.tcx, *def_id))
+            } else { None }
+        });
+        let Some(inst) = inst_opt else { return Ok(None); };
+        let ty::InstanceKind::Virtual(_, vtable_idx) = inst.def else { return Ok(None); };
+
+        // arg[0] is the fat pointer; its register holds the BSS address of {data_ptr, vtable_ptr}.
+        let arg0 = args.first().ok_or_else(|| "virtual call with no self argument".to_string())?;
+        let fat_ptr_addr = self.lower_operand(&arg0.node, body)?;
+
+        // Load vtable_ptr (offset 8 in the fat pointer).
+        let vtable_ptr = self.alloc_reg();
+        self.ops.push(LIROp::Load { dst: vtable_ptr, base: fat_ptr_addr, offset: 8 });
+
+        // Load fn ptr from vtable. vtable_idx already includes header (0=drop,1=size,2=align).
+        let fn_ptr = self.alloc_reg();
+        let fn_off = (vtable_idx * 8) as i32;
+        self.ops.push(LIROp::Load { dst: fn_ptr, base: vtable_ptr, offset: fn_off });
+
+        // Ensure the fn ptr isn't in an arg register where arg setup would clobber it.
+        let safe = if fn_ptr.0 < 8 {
+            let s = self.alloc_reg();
+            self.ops.push(LIROp::Move(s, fn_ptr));
+            s
+        } else {
+            fn_ptr
+        };
+        Ok(Some(safe))
     }
 
     // Sequential C-style field layout using individual field types.
@@ -1215,6 +1342,14 @@ impl<'tcx> MirToLir<'tcx> {
                     }
                 }
 
+                // For virtual dispatch: resolve the vtable fn ptr BEFORE arg setup so arg
+                // moves can't clobber the intermediate registers.
+                let virtual_fn_ptr = if is_direct_fn_def {
+                    self.resolve_virtual_fn_ptr(func, args, body)?
+                } else {
+                    None
+                };
+
                 // For indirect calls, evaluate the function pointer into a fresh scratch
                 // register BEFORE setting up arguments, so arg moves don't clobber it.
                 let indirect_fn_ptr = if !is_direct_fn_def {
@@ -1232,33 +1367,49 @@ impl<'tcx> MirToLir<'tcx> {
                 };
 
                 // Move arguments into x0..xN.
+                // Virtual calls: arg[0] is the fat pointer — load only data_ptr (offset 0) into x0.
                 // For composite types (size > 8 bytes), the arg is memory-backed:
                 // expand it into consecutive register slots by loading 8-byte chunks.
-                let mut reg_slot = 0u32;
-                for arg in args.iter() {
-                    let arg_ty = arg.node.ty(&body.local_decls, self.tcx);
-                    let arg_size = self.type_size(arg_ty);
-                    let slots = if arg_size <= 8 { 1u32 } else { ((arg_size + 7) / 8) as u32 };
-
-                    if slots > 1 && self.is_composite_type(arg_ty) {
-                        // Arg lives in memory; get the backing pointer without loading.
-                        let ptr = self.lower_composite_arg_ptr(&arg.node, body)?;
-                        for slot in 0..slots {
-                            let off = (slot * 8) as i32;
-                            let dst_reg = Reg(reg_slot + slot);
-                            self.ops.push(LIROp::Load { dst: dst_reg, base: ptr, offset: off });
-                        }
-                    } else {
-                        let src = self.lower_operand(&arg.node, body)?;
-                        if src.0 != reg_slot {
-                            self.ops.push(LIROp::Move(Reg(reg_slot), src));
-                        }
+                if virtual_fn_ptr.is_some() {
+                    // x0 = fat_ptr.data_ptr; x1..xN = remaining args.
+                    if let Some(arg0) = args.first() {
+                        let fat_ptr_addr = self.lower_operand(&arg0.node, body)?;
+                        self.ops.push(LIROp::Load { dst: Reg(0), base: fat_ptr_addr, offset: 0 });
                     }
-                    reg_slot += slots;
+                    for (i, arg) in args.iter().skip(1).enumerate() {
+                        let src = self.lower_operand(&arg.node, body)?;
+                        let reg_idx = (i + 1) as u32;
+                        if src.0 != reg_idx { self.ops.push(LIROp::Move(Reg(reg_idx), src)); }
+                    }
+                } else {
+                    let mut reg_slot = 0u32;
+                    for arg in args.iter() {
+                        let arg_ty = arg.node.ty(&body.local_decls, self.tcx);
+                        let arg_size = self.type_size(arg_ty);
+                        let slots = if arg_size <= 8 { 1u32 } else { ((arg_size + 7) / 8) as u32 };
+
+                        if slots > 1 && self.is_composite_type(arg_ty) {
+                            // Arg lives in memory; get the backing pointer without loading.
+                            let ptr = self.lower_composite_arg_ptr(&arg.node, body)?;
+                            for slot in 0..slots {
+                                let off = (slot * 8) as i32;
+                                let dst_reg = Reg(reg_slot + slot);
+                                self.ops.push(LIROp::Load { dst: dst_reg, base: ptr, offset: off });
+                            }
+                        } else {
+                            let src = self.lower_operand(&arg.node, body)?;
+                            if src.0 != reg_slot {
+                                self.ops.push(LIROp::Move(Reg(reg_slot), src));
+                            }
+                        }
+                        reg_slot += slots;
+                    }
                 }
 
                 // Emit the call.
-                if let Some(fp) = indirect_fn_ptr {
+                if let Some(fp) = virtual_fn_ptr {
+                    self.ops.push(LIROp::CallIndirect(fp));
+                } else if let Some(fp) = indirect_fn_ptr {
                     self.ops.push(LIROp::CallIndirect(fp));
                 } else if let mir::Operand::Constant(c) = func {
                     if let TyKind::FnDef(def_id, substs) = c.const_.ty().kind() {

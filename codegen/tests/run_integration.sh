@@ -137,3 +137,9 @@ echo "==> Linking multi-object..."
 CODE=0; "$OUT_DIR/multi_obj" || CODE=$?
 if [ "$CODE" -eq 42 ]; then echo "PASS: multi_obj — exit code 42"
 else echo "FAIL: multi_obj — expected 42, got $CODE"; exit 1; fi
+
+# ── Test 10: dyn_trait ────────────────────────────────────────────────────
+run_exit_test dyn_trait dyn_trait.rs 42
+
+# ── Test 11: fn_trait ─────────────────────────────────────────────────────
+run_exit_test fn_trait fn_trait.rs 42

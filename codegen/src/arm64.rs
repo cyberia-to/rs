@@ -540,7 +540,7 @@ impl Ctx {
                     self.emit_load64(d, b, *offset); self.commit_write(*dst);
                 }
                 LIROp::Store { src, base, offset } => {
-                    let b = self.r_read(*base); let s = self.r_read(*src);
+                    let (b, s) = self.r2_read(*base, *src);
                     self.emit_store64(s, b, *offset);
                 }
 
@@ -551,7 +551,7 @@ impl Ctx {
                     self.emit_load_sized(d, b, *offset, *size); self.commit_write(*dst);
                 }
                 LIROp::StoreSize { src, base, offset, size } => {
-                    let b = self.r_read(*base); let s = self.r_read(*src);
+                    let (b, s) = self.r2_read(*base, *src);
                     self.emit_store_sized(s, b, *offset, *size);
                 }
 
@@ -562,7 +562,7 @@ impl Ctx {
                     self.emit(enc::ldar(pd, pp)); self.commit_write(*dst);
                 }
                 LIROp::AtomicStore { src, ptr } => {
-                    let pp = self.r_read(*ptr); let ps = self.r_read(*src);
+                    let (pp, ps) = self.r2_read(*ptr, *src);
                     self.emit(enc::stlr(ps, pp));
                 }
                 LIROp::AtomicXchg { dst, src, ptr } => {

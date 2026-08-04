@@ -55,6 +55,7 @@ pub struct DataReloc {
 /// A relocation within a static data section: write the VM address of `fn_symbol`
 /// (a code symbol) into the static named `static_name` at `byte_offset`.
 /// Used to fix up vtable entries (function pointers stored in read-only data).
+#[derive(Clone)]
 pub struct StaticCodeReloc {
     pub static_name: String,
     pub byte_offset: usize,
@@ -288,18 +289,21 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
             }
         }
         if !patched {
-            // The static may be writable (TLS/BSS) — we can't patch zerofill data here,
-            // but vtables are always read-only, so this case should not arise in practice.
+            // Static is in BSS (writable vtable). Runtime init code (LoadAddr+Store LIR)
+            // initializes the vtable fn-ptr slots at program start — no patching needed here.
         }
     }
 
-    // Patch ADRP+ADD relocations for both RO (cstring) and RW (BSS) symbols.
+    // Patch ADRP+ADD relocations for data symbols (cstring/BSS) and function symbols.
+    // Function symbols arise from LoadAddr(fn_sym) in vtable init code.
     let mut code = input.code.to_vec();
     for r in &input.relocs {
         let target = if let Some(&off) = ro_offsets.get(&r.symbol) {
             cstring_vm_addr + off as u64
         } else if let Some(&off) = rw_offsets.get(&r.symbol) {
             data_vmaddr + off as u64
+        } else if let Some(&fn_off) = input.fn_offsets.get(&r.symbol) {
+            code_vm_addr + fn_off as u64
         } else {
             panic!("unknown reloc symbol: {}", r.symbol);
         };
@@ -504,12 +508,13 @@ pub struct CallReloc2 {
 
 /// Input for the MH_OBJECT emitter.
 pub struct RelocatableInput<'a> {
-    pub code:        &'a [u8],
-    pub ro_data:     Vec<StaticData>,   // string literals → __TEXT,__cstring
-    pub rw_data:     Vec<StaticData>,   // writable statics → __DATA,__bss (zerofill)
-    pub call_relocs: Vec<CallReloc2>,   // BL relocations for function calls
-    pub data_relocs: Vec<DataReloc>,    // ADRP+ADD pairs for data references
-    pub fn_syms:     Vec<FnSymbol>,     // defined function symbols
+    pub code:         &'a [u8],
+    pub ro_data:      Vec<StaticData>,        // string literals → __TEXT,__cstring
+    pub rw_data:      Vec<StaticData>,        // writable statics → __DATA,__bss (zerofill)
+    pub call_relocs:  Vec<CallReloc2>,        // BL relocations for function calls
+    pub data_relocs:  Vec<DataReloc>,         // ADRP+ADD pairs for data references
+    pub fn_syms:      Vec<FnSymbol>,          // defined function symbols
+    pub static_relocs: Vec<StaticCodeReloc>,  // vtable fn-ptr slots → UNSIGNED relocs in __cstring
 }
 
 // Mach-O relocation entry: 8 bytes.
@@ -537,6 +542,12 @@ fn reloc_info(symbolnum: u32, pcrel: bool, r_extern: bool, r_type: u32) -> u32 {
         | (r_length << 25)
         | ((r_extern as u32) << 27)
         | (r_type << 28)
+}
+
+fn reloc_info_unsigned64(symbolnum: u32) -> u32 {
+    // ARM64_RELOC_UNSIGNED (type=0), r_length=3 (64-bit), pcrel=0, extern=1.
+    let r_length: u32 = 3;
+    (symbolnum & 0x00FF_FFFF) | (r_length << 25) | (1 << 27)
 }
 
 /// Emit a Mach-O MH_OBJECT relocatable file for ARM64.
@@ -744,6 +755,23 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     let n_text_relocs = text_relocs.len() as u32;
 
     // -----------------------------------------------------------------------
+    // Relocation entries for __cstring (vtable fn-ptr slots → UNSIGNED).
+    // -----------------------------------------------------------------------
+    let mut cstring_relocs: Vec<RelocationInfo> = Vec::new();
+    for sr in &input.static_relocs {
+        if let Some(&cstring_base) = cstring_offsets.get(&sr.static_name) {
+            let byte_off = cstring_base + sr.byte_offset;
+            if let Some(&sym_idx) = sym_index.get(&sr.fn_symbol) {
+                cstring_relocs.push(RelocationInfo {
+                    r_address: byte_off as i32,
+                    r_info: reloc_info_unsigned64(sym_idx),
+                });
+            }
+        }
+    }
+    let n_cstring_relocs = cstring_relocs.len() as u32;
+
+    // -----------------------------------------------------------------------
     // File layout calculation.
     // -----------------------------------------------------------------------
     // Load commands size.
@@ -761,11 +789,13 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     let data_end:    usize = cstring_off + cstring_size;
 
     // Relocation entries follow section data (8-byte aligned).
-    let text_reloc_off: usize = align_up(data_end, 4);
-    let text_reloc_end: usize = text_reloc_off + n_text_relocs as usize * RELOC_SIZE;
+    let text_reloc_off:    usize = align_up(data_end, 4);
+    let text_reloc_end:    usize = text_reloc_off + n_text_relocs as usize * RELOC_SIZE;
+    let cstring_reloc_off: usize = text_reloc_end;
+    let cstring_reloc_end: usize = cstring_reloc_off + n_cstring_relocs as usize * RELOC_SIZE;
 
     // Symbol table and string table follow relocs (4-byte aligned).
-    let symtab_off: usize = align_up(text_reloc_end, 4);
+    let symtab_off: usize = align_up(cstring_reloc_end, 4);
     let strtab_off: usize = symtab_off + nsyms as usize * NLIST_SIZE;
 
     // -----------------------------------------------------------------------
@@ -806,12 +836,15 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     }) });
 
     // Section: __TEXT,__cstring (optional)
+    // addr=0 so that symbol n_value == section-relative offset directly.
+    // parse_symbols in the linker computes: offset = sym.address() - sec.address() = n_value - 0 = n_value.
     if has_cstring {
         out.extend_from_slice(unsafe { as_bytes(&Section64 {
             sectname: name16("__cstring"), segname: name16("__TEXT"),
-            addr: cstring_off as u64, size: cstring_size as u64,
+            addr: 0, size: cstring_size as u64,
             offset: cstring_off as u32, align: 0,
-            reloff: 0, nreloc: 0,
+            reloff: if n_cstring_relocs > 0 { cstring_reloc_off as u32 } else { 0 },
+            nreloc: n_cstring_relocs,
             flags: S_CSTRING_LITERALS,
             reserved1: 0, reserved2: 0, reserved3: 0,
         }) });
@@ -855,6 +888,9 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     // Relocation entries.
     out.resize(text_reloc_off, 0);
     for r in &text_relocs {
+        out.extend_from_slice(unsafe { as_bytes(r) });
+    }
+    for r in &cstring_relocs {
         out.extend_from_slice(unsafe { as_bytes(r) });
     }
 

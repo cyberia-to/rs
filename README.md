@@ -30,7 +30,7 @@ The file extension is `.rs`. The edition identifier is `rs`. The compiler binary
 | 3 | [Deterministic Functions](reference/deterministic.md) | ✓ | — | Same output everywhere |
 | 4 | [Addressed Types](reference/addressed.md) | — | ✓ | Identity from content |
 | 5 | [Step-Scoped State](reference/step.md) | — | ✓ | No state leaks |
-| 6 | [Cell Declarations](reference/cells.md) | — | ✓ | Hot-swap + lifecycle |
+| 6 | [Module Declarations](reference/modules.md) | — | ✓ | Hot-swap + lifecycle |
 | 7 | [Edition Restrictions](reference/restrictions.md) | ✓ | — | No heap, no leaks |
 
 Compiler patch: **~2,000 lines**. Library + macros: **~6,550 lines**. Rust compatibility: **100%**.
@@ -42,7 +42,7 @@ Compiler patch: **~2,000 lines**. Library + macros: **~6,550 lines**. Rust compa
 - **[Standard Library](reference/stdlib.md)** — fixed_point, bounded, channel, particle, arena
 - **[Compiler](reference/compiler.md)** — architecture, line counts, build pipeline
 - **[Error Catalog](reference/errors.md)** — all 33 diagnostics (RS001–RS507)
-- **[Tutorial: cyb os Cell](docs/tutorials/cyb-cell.md)** — all seven primitives in one file
+- **[Tutorial: cyb os Module](docs/tutorials/cyb-module.md)** — all seven primitives in one file
 
 Any Rust programmer can write Rs. Any LLM trained on Rust can generate Rs. Any no_std crate works with Rs. The ecosystem is not forked — it is extended.
 

@@ -13,7 +13,7 @@ tags: cyber, rs, reference
 | 3 | [Deterministic Functions](deterministic.md) | `#[deterministic]` | Compiler (400L) |
 | 4 | [Addressed Types](addressed.md) | `#[derive(Addressed)]` | Proc-macro (500L) |
 | 5 | [Step-Scoped State](step.md) | `#[step]` | Proc-macro (300L) |
-| 6 | [Cell Declarations](cells.md) | `cell! { }` | Proc-macro (2000L) |
+| 6 | [Module Declarations](modules.md) | `module! { }` | Proc-macro (2000L) |
 | 7 | [Edition Restrictions](restrictions.md) | `edition = "rs"` | Compiler (400L) |
 
 ## Infrastructure

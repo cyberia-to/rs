@@ -74,7 +74,7 @@ Wall clock time varies between machines and runs.
 
 #### Fix
 
-Use step counters from the cell context (`self.current_step()`).
+Use step counters from the module context (`self.current_step()`).
 
 ---
 

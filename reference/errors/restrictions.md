@@ -98,14 +98,14 @@ enum Action {
 
 ```text
 error[RS505]: reference counting forbidden in rs edition
-  help: use cell-owned state or bounded channels
+  help: use module-owned state or bounded channels
 ```
 
-`Arc<T>` and `Rc<T>` use heap allocation and runtime reference counting. In rs edition, ownership is managed by cells and channels.
+`Arc<T>` and `Rc<T>` use heap allocation and runtime reference counting. In rs edition, ownership is managed by modules and channels.
 
 #### Fix
 
-Use cell state for shared data, or bounded channels for inter-cell communication.
+Use module state for shared data, or bounded channels for inter-module communication.
 
 ---
 

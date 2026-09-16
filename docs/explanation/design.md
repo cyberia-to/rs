@@ -39,8 +39,8 @@ In standard Rust editions (`2021`, `2024`), none of these restrictions apply. Rs
 Rs introduces zero new keywords. All extensions use:
 - Attributes (`#[register]`, `#[deterministic]`, `#[step]`, `#[bounded_async]`)
 - Derive macros (`#[derive(Addressed)]`)
-- Declarative macros (`cell! { }`)
+- Declarative macros (`module! { }`)
 
-The `async(duration)` shorthand syntax is available inside `cell!` blocks (parsed by the macro). Outside cells, `#[bounded_async(duration)]` is standard Rust attribute syntax.
+The `async(duration)` shorthand syntax is available inside `module!` blocks (parsed by the macro). Outside modules, `#[bounded_async(duration)]` is standard Rust attribute syntax.
 
 This ensures no conflict with any existing or future Rust syntax.

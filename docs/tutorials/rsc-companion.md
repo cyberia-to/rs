@@ -34,7 +34,7 @@ Every violation must be fixed — not suppressed — unless interfacing with an 
 | RS502 | `Vec<T>` | `BoundedVec<T, N>` with compile-time capacity |
 | RS503 | `String` | `&str` or `ArrayString<N>` |
 | RS504 | `dyn Trait` | generics or enum dispatch |
-| RS505 | `Arc<T>`, `Rc<T>` | cell-owned state or bounded channels |
+| RS505 | `Arc<T>`, `Rc<T>` | module-owned state or bounded channels |
 | RS506 | `panic!()` | `Result` for recoverable, abort for unrecoverable |
 | RS507 | `HashMap`, `HashSet` | `BTreeMap`, `BTreeSet`, or `BoundedMap<K,V,N>` |
 

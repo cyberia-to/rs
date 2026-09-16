@@ -20,18 +20,18 @@ error[RS101]: async functions must have a deadline in rs edition
 
 In `edition = "rs"`, every async function must have an explicit deadline. An async function without a deadline can block indefinitely — a liveness failure in OS kernels and consensus nodes.
 
-Inside `cell!` macro: use `async(Duration) fn` syntax.
-Outside cells: use `#[bounded_async(Duration)]` attribute macro.
+Inside `module!` macro: use `async(Duration) fn` syntax.
+Outside modules: use `#[bounded_async(Duration)]` attribute macro.
 
 #### Fix
 
 ```rust
-// Inside cell!:
+// Inside module!:
 pub async(Duration::from_millis(100)) fn fetch(&self) -> Result<Data> {
     // ...
 }
 
-// Outside cell!:
+// Outside module!:
 #[bounded_async(Duration::from_millis(100))]
 async fn fetch() -> Result<Data, AppError> {
     // ...

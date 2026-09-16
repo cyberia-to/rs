@@ -60,7 +60,7 @@ tags: cyber, rs, reference
 │  │  - #[step]                     300L  │    │
 │  │  - #[deterministic]            400L  │    │
 │  │  - #[register]                 800L  │    │
-│  │  - cell! { }                  2000L  │    │
+│  │  - module! { }                  2000L  │    │
 │  └──────────────────────────────────────┘    │
 │                                              │
 │  ┌──────────────────────────────────────┐    │
@@ -115,7 +115,7 @@ Two standard Rust crates (`rs-lang` + `rs-lang-macros`) provide the library and 
 
 ## No Parser Change
 
-The `cell!` macro handles `async(dur)` syntax internally (parses its own token stream). Outside cells, `#[bounded_async(dur)]` attribute macro provides the same functionality — valid Rust syntax. No rustc parser modification needed.
+The `module!` macro handles `async(dur)` syntax internally (parses its own token stream). Outside modules, `#[bounded_async(dur)]` attribute macro provides the same functionality — valid Rust syntax. No rustc parser modification needed.
 
 ## Build Pipeline
 
@@ -144,8 +144,8 @@ Proc-macros and compiler lints enforce overlapping rules at different levels:
 | Deterministic: unchecked arithmetic | — | MIR operator analysis (RS206) |
 | Addressed: type restrictions | Token-level reject | MIR transitivity verify |
 | Edition restrictions (RS501-507) | — | HIR type walk |
-| Bounded async enforcement | Inside `cell!` only | All async fn (RS101) |
-| Step context | Inside `cell!` only | Cross-cell enforcement (RS401) |
+| Bounded async enforcement | Inside `module!` only | All async fn (RS101) |
+| Step context | Inside `module!` only | Cross-module enforcement (RS401) |
 
 Code compiled with standard rustc gets proc-macro enforcement. Code compiled with rsc gets both layers. Same RS error codes in both.
 

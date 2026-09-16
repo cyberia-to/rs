@@ -94,15 +94,15 @@ In standard Rust editions, `async(duration)` is available but not required.
 
 Code examples below use the `rs::` logical namespace. In Rust code, import as `rs_lang::` (see [stdlib.md](stdlib.md)).
 
-Inside `cell!` macro: the macro parses `async(dur) fn` from its own token stream and generates the timeout wrapping. The deadline expression must be a const expression of type `Duration`.
+Inside `module!` macro: the macro parses `async(dur) fn` from its own token stream and generates the timeout wrapping. The deadline expression must be a const expression of type `Duration`.
 
-Outside cells: the `#[bounded_async(dur)]` attribute macro provides the same functionality with standard Rust syntax:
+Outside modules: the `#[bounded_async(dur)]` attribute macro provides the same functionality with standard Rust syntax:
 
 ```rust
-// Inside cell! — custom syntax, parsed by macro:
+// Inside module! — custom syntax, parsed by macro:
 pub async(Duration::from_millis(100)) fn fetch(&self) -> Result<Item, AppError> { ... }
 
-// Outside cell! — standard attribute syntax:
+// Outside module! — standard attribute syntax:
 #[bounded_async(Duration::from_millis(100))]
 async fn fetch(id: u64) -> Result<Item, AppError> { ... }
 ```
@@ -120,7 +120,7 @@ fn fetch(id: u64) -> impl Future<Output = Result<Item, AppError>> {
 }
 ```
 
-No rustc parser modification needed. The `async(dur)` syntax only exists inside `cell!` token streams.
+No rustc parser modification needed. The `async(dur)` syntax only exists inside `module!` token streams.
 
 The timeout marker type:
 
@@ -156,7 +156,7 @@ async(Duration::from_millis(100)) fn fetch(id: u64) -> Result<Item, AppError> {
 }
 ```
 
-Implementation: the `cell!` macro handles `async(dur)` syntax internally (~included in cell macro line count). Outside cells, `#[bounded_async(dur)]` attribute macro provides the same functionality (~200 lines in rs-lang-macros). No rustc parser modification needed. Diagnostic messages: ~100 lines.
+Implementation: the `module!` macro handles `async(dur)` syntax internally (~included in module macro line count). Outside modules, `#[bounded_async(dur)]` attribute macro provides the same functionality (~200 lines in rs-lang-macros). No rustc parser modification needed. Diagnostic messages: ~100 lines.
 
 ## Error Reference
 

@@ -38,7 +38,7 @@ let d: Box<dyn Trait> = ...;
 let r = Arc::new(data);
 let r2 = Rc::new(data);
 //~^ error[RS505]: reference counting forbidden in rs edition
-//~| help: use cell-owned state or bounded channels
+//~| help: use module-owned state or bounded channels
 
 let s: HashSet<u32> = HashSet::new();
 //~^ error[RS507]: non-deterministic collections forbidden in rs edition

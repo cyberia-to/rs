@@ -1,6 +1,6 @@
-//! Cell DSL parser.
+//! Module DSL parser.
 //!
-//! Parses the token stream inside `cell! { ... }` into a `CellDef` structure.
+//! Parses the token stream inside `module! { ... }` into a `ModuleDef` structure.
 //! The DSL supports:
 //! - name: Ident
 //! - version: u32
@@ -24,26 +24,26 @@ use syn::parse::{Parse, ParseStream};
 // AST types
 // ---------------------------------------------------------------------------
 
-pub struct CellDef {
+pub struct ModuleDef {
     pub name: Ident,
     pub version: u32,
     pub version_span: Span,
     pub budget: Expr,
     pub heartbeat: Expr,
-    pub state_fields: Vec<CellField>,
-    pub step_state_fields: Vec<CellField>,
-    pub methods: Vec<CellMethod>,
+    pub state_fields: Vec<ModuleField>,
+    pub step_state_fields: Vec<ModuleField>,
+    pub methods: Vec<ModuleMethod>,
     pub migrate: Option<MigrateDef>,
     pub input_channel: Option<ChannelDef>,
     pub output_channel: Option<ChannelDef>,
 }
 
-pub struct CellField {
+pub struct ModuleField {
     pub name: Ident,
     pub ty: Type,
 }
 
-pub struct CellMethod {
+pub struct ModuleMethod {
     pub vis: MethodVis,
     pub is_async: bool,
     pub deadline: Option<Expr>,
@@ -79,7 +79,7 @@ pub struct MigrateDef {
 }
 
 pub enum MigrateSource {
-    /// `migrate from v3` — resolves to `{CellName}StateV3`
+    /// `migrate from v3` — resolves to `{ModuleName}StateV3`
     Version(u32),
     /// `migrate from my_module::OldState` — literal path
     Path(syn::Path),
@@ -98,21 +98,21 @@ pub struct ChannelDef {
 // Parser
 // ---------------------------------------------------------------------------
 
-pub fn parse_cell(input: TokenStream) -> Result<CellDef> {
-    let cell: CellDef = syn::parse2(input)?;
-    validate(&cell)?;
-    Ok(cell)
+pub fn parse_module(input: TokenStream) -> Result<ModuleDef> {
+    let module: ModuleDef = syn::parse2(input)?;
+    validate(&module)?;
+    Ok(module)
 }
 
-impl Parse for CellDef {
+impl Parse for ModuleDef {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut name: Option<Ident> = None;
         let mut version: Option<(u32, Span)> = None;
         let mut budget: Option<Expr> = None;
         let mut heartbeat: Option<Expr> = None;
-        let mut state_fields: Vec<CellField> = Vec::new();
-        let mut step_state_fields: Vec<CellField> = Vec::new();
-        let mut methods: Vec<CellMethod> = Vec::new();
+        let mut state_fields: Vec<ModuleField> = Vec::new();
+        let mut step_state_fields: Vec<ModuleField> = Vec::new();
+        let mut methods: Vec<ModuleMethod> = Vec::new();
         let mut migrate: Option<MigrateDef> = None;
         let mut input_channel: Option<ChannelDef> = None;
         let mut output_channel: Option<ChannelDef> = None;
@@ -196,23 +196,23 @@ impl Parse for CellDef {
                 other => {
                     return Err(Error::new(
                         ident.span(),
-                        format!("unexpected keyword `{}` in cell! declaration", other),
+                        format!("unexpected keyword `{}` in module! declaration", other),
                     ));
                 }
             }
         }
 
         let (ver, ver_span) = version
-            .ok_or_else(|| Error::new(Span::call_site(), "missing `version` in cell!"))?;
+            .ok_or_else(|| Error::new(Span::call_site(), "missing `version` in module!"))?;
 
-        Ok(CellDef {
-            name: name.ok_or_else(|| Error::new(Span::call_site(), "missing `name` in cell!"))?,
+        Ok(ModuleDef {
+            name: name.ok_or_else(|| Error::new(Span::call_site(), "missing `name` in module!"))?,
             version: ver,
             version_span: ver_span,
             budget: budget
-                .ok_or_else(|| Error::new(Span::call_site(), "missing `budget` in cell!"))?,
+                .ok_or_else(|| Error::new(Span::call_site(), "missing `budget` in module!"))?,
             heartbeat: heartbeat
-                .ok_or_else(|| Error::new(Span::call_site(), "missing `heartbeat` in cell!"))?,
+                .ok_or_else(|| Error::new(Span::call_site(), "missing `heartbeat` in module!"))?,
             state_fields,
             step_state_fields,
             methods,
@@ -223,13 +223,13 @@ impl Parse for CellDef {
     }
 }
 
-fn parse_fields(input: ParseStream) -> Result<Vec<CellField>> {
+fn parse_fields(input: ParseStream) -> Result<Vec<ModuleField>> {
     let mut fields = Vec::new();
     while !input.is_empty() {
         let name: Ident = input.parse()?;
         input.parse::<Token![:]>()?;
         let ty: Type = input.parse()?;
-        fields.push(CellField { name, ty });
+        fields.push(ModuleField { name, ty });
         if input.is_empty() {
             break;
         }
@@ -238,7 +238,7 @@ fn parse_fields(input: ParseStream) -> Result<Vec<CellField>> {
     Ok(fields)
 }
 
-fn parse_method(input: ParseStream, attrs: Vec<Attribute>) -> Result<CellMethod> {
+fn parse_method(input: ParseStream, attrs: Vec<Attribute>) -> Result<ModuleMethod> {
     // Parse visibility.
     let vis = if input.peek(Token![pub]) {
         input.parse::<Token![pub]>()?;
@@ -323,7 +323,7 @@ fn parse_method(input: ParseStream, attrs: Vec<Attribute>) -> Result<CellMethod>
     let body_block: Block = input.parse()?;
     let body = quote! { #body_block };
 
-    Ok(CellMethod {
+    Ok(ModuleMethod {
         vis,
         is_async,
         deadline,
@@ -390,22 +390,27 @@ fn parse_migrate_source(input: ParseStream) -> Result<MigrateSource> {
 // Validation
 // ---------------------------------------------------------------------------
 
-fn validate(cell: &CellDef) -> Result<()> {
+fn validate(module: &ModuleDef) -> Result<()> {
+    for method in &module.methods {
+        if method.is_async && method.deadline.is_none() {
+            return Err(Error::new(method.name.span(), "async module methods require a deadline (RS101)"));
+        }
+    }
     // 1. Version must be > 0.
-    if cell.version == 0 {
-        return Err(Error::new(cell.version_span, "version must be > 0"));
+    if module.version == 0 {
+        return Err(Error::new(module.version_span, "version must be > 0"));
     }
 
     // 2. Unique state field names.
-    check_unique_fields(&cell.state_fields, "state")?;
+    check_unique_fields(&module.state_fields, "state")?;
 
     // 3. Unique step_state field names.
-    check_unique_fields(&cell.step_state_fields, "step_state")?;
+    check_unique_fields(&module.step_state_fields, "step_state")?;
 
     // 4. Unique method names.
     {
         let mut seen = std::collections::HashSet::new();
-        for m in &cell.methods {
+        for m in &module.methods {
             let name_str = m.name.to_string();
             if !seen.insert(name_str.clone()) {
                 return Err(Error::new(
@@ -417,9 +422,9 @@ fn validate(cell: &CellDef) -> Result<()> {
     }
 
     // 5. Migration field coverage — every migration field must exist in state.
-    if let Some(ref mig) = cell.migrate {
+    if let Some(ref mig) = module.migrate {
         let state_names: std::collections::HashSet<String> =
-            cell.state_fields.iter().map(|f| f.name.to_string()).collect();
+            module.state_fields.iter().map(|f| f.name.to_string()).collect();
         for fm in &mig.field_mappings {
             let name_str = fm.name.to_string();
             if !state_names.contains(&name_str) {
@@ -432,11 +437,11 @@ fn validate(cell: &CellDef) -> Result<()> {
     }
 
     // 6. No f32/f64 in state or step_state fields.
-    for field in cell.state_fields.iter().chain(cell.step_state_fields.iter()) {
+    for field in module.state_fields.iter().chain(module.step_state_fields.iter()) {
         if is_forbidden_float(&field.ty) {
             return Err(Error::new(
                 field.name.span(),
-                "f32/f64 forbidden in cell state \u{2014} use FixedPoint (RS302)",
+                "f32/f64 forbidden in module state \u{2014} use FixedPoint (RS302)",
             ));
         }
     }
@@ -444,7 +449,7 @@ fn validate(cell: &CellDef) -> Result<()> {
     Ok(())
 }
 
-fn check_unique_fields(fields: &[CellField], block_name: &str) -> Result<()> {
+fn check_unique_fields(fields: &[ModuleField], block_name: &str) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for f in fields {
         let name_str = f.name.to_string();

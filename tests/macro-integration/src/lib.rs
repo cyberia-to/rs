@@ -5,7 +5,7 @@
 
 use core::time::Duration;
 use rs_lang::prelude::*;
-use rs_lang::{cell, step, Addressed, deterministic};
+use rs_lang::{module, step, Addressed, deterministic};
 
 // ---------------------------------------------------------------------------
 // #[derive(Addressed)] — canonical serialization + particle
@@ -63,10 +63,10 @@ fn multiply_fixed(a: u64, b: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// cell! — full cell declaration
+// module! — full module declaration
 // ---------------------------------------------------------------------------
 
-cell! {
+module! {
     name: Counter,
     version: 1,
     budget: Duration::from_millis(100),
@@ -100,10 +100,10 @@ cell! {
 }
 
 // ---------------------------------------------------------------------------
-// cell! — minimal cell (no step_state, no migrate)
+// module! — minimal module (no step_state, no migrate)
 // ---------------------------------------------------------------------------
 
-cell! {
+module! {
     name: Minimal,
     version: 1,
     budget: Duration::from_millis(50),
@@ -125,7 +125,7 @@ cell! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rs_lang::{Cell, CellMetadata, StepReset};
+    use rs_lang::{Module, ModuleMetadata, StepReset};
 
     // --- Addressed ---
 
@@ -193,10 +193,10 @@ mod tests {
         assert_eq!(multiply_fixed(3, 7), 21);
     }
 
-    // --- Cell: Counter ---
+    // --- Module: Counter ---
 
     #[test]
-    fn cell_trait_constants() {
+    fn module_trait_constants() {
         assert_eq!(Counter::NAME, "Counter");
         assert_eq!(Counter::VERSION, 1);
         assert_eq!(Counter::BUDGET, Duration::from_millis(100));
@@ -204,38 +204,38 @@ mod tests {
     }
 
     #[test]
-    fn cell_constructor() {
-        let cell = Counter::new();
-        assert_eq!(cell.current_step(), 0);
-        assert_eq!(cell.get(), 0);
+    fn module_constructor() {
+        let module = Counter::new();
+        assert_eq!(module.current_step(), 0);
+        assert_eq!(module.get(), 0);
     }
 
     #[test]
-    fn cell_increment_and_limit() {
-        let mut cell = Counter::new();
+    fn module_increment_and_limit() {
+        let mut module = Counter::new();
         // limit defaults to 0, so first increment should fail
         // Actually Default for u32 is 0, so limit is 0
-        let result = cell.increment();
+        let result = module.increment();
         assert!(result.is_err());
     }
 
     #[test]
-    fn cell_health_check() {
-        let cell = Counter::new();
-        assert_eq!(cell.health_check(), HealthStatus::Healthy);
+    fn module_health_check() {
+        let module = Counter::new();
+        assert_eq!(module.health_check(), HealthStatus::Healthy);
     }
 
     #[test]
-    fn cell_step_reset() {
-        let mut cell = Counter::new();
+    fn module_step_reset() {
+        let mut module = Counter::new();
         // step_state.increments starts at 0 (default)
-        cell.reset_step_state();
+        module.reset_step_state();
         // Should still be 0 after reset
-        assert_eq!(cell.get(), 0);
+        assert_eq!(module.get(), 0);
     }
 
     #[test]
-    fn cell_metadata_interface() {
+    fn module_metadata_interface() {
         let sigs = Counter::interface();
         let names: Vec<&str> = sigs.iter().map(|s| s.name).collect();
         assert!(names.contains(&"get"), "missing 'get' in interface");
@@ -245,25 +245,25 @@ mod tests {
     }
 
     #[test]
-    fn cell_error_type_exists() {
+    fn module_error_type_exists() {
         // CounterError should exist and have LimitReached variant
         let _err: CounterError = CounterError::LimitReached;
         // Debug should be derived
         let _ = format!("{:?}", _err);
     }
 
-    // --- Cell: Minimal ---
+    // --- Module: Minimal ---
 
     #[test]
-    fn minimal_cell() {
-        let cell = Minimal::new();
+    fn minimal_module() {
+        let module = Minimal::new();
         assert_eq!(Minimal::NAME, "Minimal");
         assert_eq!(Minimal::VERSION, 1);
-        assert!(!cell.is_alive()); // bool defaults to false
+        assert!(!module.is_alive()); // bool defaults to false
     }
 
     #[test]
-    fn minimal_cell_metadata() {
+    fn minimal_module_metadata() {
         let sigs = Minimal::interface();
         assert_eq!(sigs.len(), 1);
         assert_eq!(sigs[0].name, "is_alive");

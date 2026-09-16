@@ -209,7 +209,7 @@ fn is_bare_instant(i: usize, tokens: &[TokenTree]) -> bool {
 }
 
 /// Walk a token group recursively, collecting all ident-level matches.
-/// This is the entry point used by the cell macro to check deterministic
+/// This is the entry point used by the module macro to check deterministic
 /// bodies without re-parsing as an ItemFn.
 #[allow(dead_code)]
 pub fn scan_token_stream(stream: &TokenStream) -> Vec<(Span, String)> {

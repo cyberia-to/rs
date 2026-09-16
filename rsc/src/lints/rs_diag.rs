@@ -53,7 +53,7 @@ pub static RS_DIAGNOSTICS: &[RsDiagnostic] = &[
     },
     RsDiagnostic {
         code: "RS101", short: "async function must have a deadline",
-        long: "Every async function in Rs must declare an explicit time budget. Unbounded async operations can stall a cell indefinitely, violating the system's liveness guarantees. Use #[bounded_async(Duration::from_millis(N))] or declare the function inside a cell! block with async(Duration) syntax.",
+        long: "Every async function in Rs must declare an explicit time budget. Unbounded async operations can stall a module indefinitely, violating the system's liveness guarantees. Use #[bounded_async(Duration::from_millis(N))] or declare the function inside a module! block with async(Duration) syntax.",
         suggestion: "#[bounded_async(Duration::from_millis(100))]",
     },
     RsDiagnostic {
@@ -73,7 +73,7 @@ pub static RS_DIAGNOSTICS: &[RsDiagnostic] = &[
     },
     RsDiagnostic {
         code: "RS204", short: "system clock in #[deterministic] function",
-        long: "System clocks (Instant::now(), SystemTime::now()) return wall-clock or monotonic time that varies between machines and runs. Deterministic functions must use logical step counters provided by the cell runtime instead.",
+        long: "System clocks (Instant::now(), SystemTime::now()) return wall-clock or monotonic time that varies between machines and runs. Deterministic functions must use logical step counters provided by the module runtime instead.",
         suggestion: "use step counters",
     },
     RsDiagnostic {
@@ -137,9 +137,9 @@ pub static RS_DIAGNOSTICS: &[RsDiagnostic] = &[
         suggestion: "use #[repr(u8/u16/u32)]",
     },
     RsDiagnostic {
-        code: "RS401", short: "#[step] state outside cell context",
-        long: "Step-scoped state (#[step] structs) is managed by the cell runtime and automatically reset at step boundaries. Accessing it outside a cell context bypasses the runtime's lifecycle management, leading to stale or uninitialized state.",
-        suggestion: "access from within a cell! block",
+        code: "RS401", short: "#[step] state outside module context",
+        long: "Step-scoped state (#[step] structs) is managed by the module runtime and automatically reset at step boundaries. Accessing it outside a module context bypasses the runtime's lifecycle management, leading to stale or uninitialized state.",
+        suggestion: "access from within a module! block",
     },
     RsDiagnostic {
         code: "RS501", short: "heap allocation forbidden",
@@ -163,8 +163,8 @@ pub static RS_DIAGNOSTICS: &[RsDiagnostic] = &[
     },
     RsDiagnostic {
         code: "RS505", short: "reference counting forbidden",
-        long: "Arc and Rc use heap allocation for the reference-counted pointer and runtime atomic/non-atomic counting for the reference count. Rs edition requires explicit ownership through cell state or bounded channels.",
-        suggestion: "use cell-owned state",
+        long: "Arc and Rc use heap allocation for the reference-counted pointer and runtime atomic/non-atomic counting for the reference count. Rs edition requires explicit ownership through module state or bounded channels.",
+        suggestion: "use module-owned state",
     },
     RsDiagnostic {
         code: "RS506", short: "unwinding panic forbidden",

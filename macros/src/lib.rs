@@ -1,4 +1,4 @@
-//! Rs proc-macros: addressed, step, deterministic, register, cell, bounded_async.
+//! Rs proc-macros: addressed, step, deterministic, register, module, bounded_async.
 //!
 //! Generates code targeting `rs_lang::` paths. Works with standard rustc
 //! (proc-macro enforcement) and rsc (additional MIR-level checks).
@@ -7,7 +7,7 @@ extern crate proc_macro;
 
 mod addressed;
 mod bounded_async;
-mod cell;
+mod module;
 mod deterministic;
 mod registers;
 mod step;
@@ -75,14 +75,21 @@ pub fn register(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Declarative macro for cell definitions.
+/// Declarative macro for module definitions.
 ///
 /// Parses name, version, budget, heartbeat, state, step_state, methods,
-/// channels, and migration blocks. Generates state structs, Cell trait impl,
-/// error enum, CellMetadata, and public interface.
+/// channels, and migration blocks. Generates state structs, Module trait impl,
+/// error enum, ModuleMetadata, and public interface.
 #[proc_macro]
-pub fn cell(input: TokenStream) -> TokenStream {
-    cell::expand(input.into())
+pub fn module(input: TokenStream) -> TokenStream {
+    module::expand(input.into())
         .unwrap_or_else(|e| e.into_compile_error())
         .into()
+}
+
+/// Compatibility spelling for `module!`; removed in rs-lang 0.2.
+#[deprecated(since = "0.1.0", note = "use module!; compatibility alias is removed in 0.2")]
+#[proc_macro]
+pub fn cell(input: TokenStream) -> TokenStream {
+    module(input)
 }

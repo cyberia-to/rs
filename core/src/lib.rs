@@ -26,14 +26,19 @@ pub use rs_lang_macros::*;
 
 // Re-export core types at crate root for ergonomic access.
 pub use core_types::{
-    Address, BufMut, CanonicalSerialize, Cell, CellMetadata, FunctionSignature,
+    Address, BufMut, CanonicalSerialize, Module, ModuleMetadata, FunctionSignature,
     HealthStatus, MigrateFrom, Particle, StepReset, Timeout,
 };
 
+#[allow(deprecated)]
+pub use core_types::{Cell, CellMetadata};
+
 /// Prelude module — import everything with `use rs_lang::prelude::*;`
 pub mod prelude {
+    #[allow(deprecated)]
+    pub use crate::core_types::{Cell, CellMetadata};
     pub use crate::core_types::{
-        Address, BufMut, CanonicalSerialize, Cell, CellMetadata, FunctionSignature,
+        Address, BufMut, CanonicalSerialize, Module, ModuleMetadata, FunctionSignature,
         HealthStatus, MigrateFrom, Particle, StepReset, Timeout,
     };
     pub use crate::fixed_point::FixedPoint;

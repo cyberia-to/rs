@@ -1,32 +1,32 @@
-//! Cell code generation.
+//! Module code generation.
 //!
-//! Takes a parsed `CellDef` and generates all output code:
-//! state structs, wrapper, Cell trait, migration, error enum,
+//! Takes a parsed `ModuleDef` and generates all output code:
+//! state structs, wrapper, Module trait, migration, error enum,
 //! metadata, methods, and channel type aliases.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, ToTokens};
 use syn::{Ident, Result, ReturnType, Type};
 
-use super::parse::{CellDef, CellField, CellMethod, MethodVis, MigrateSource, SelfArg};
+use super::parse::{ModuleDef, ModuleField, ModuleMethod, MethodVis, MigrateSource, SelfArg};
 
-pub fn generate(cell: &CellDef) -> Result<TokenStream> {
-    let state_struct = gen_state_struct(cell);
-    let step_state_struct = gen_step_state_struct(cell);
-    let wrapper_struct = gen_wrapper_struct(cell);
-    let cell_trait_impl = gen_cell_trait_impl(cell);
-    let migrate_impl = gen_migrate_impl(cell);
-    let error_enum = gen_error_enum(cell);
-    let error_aliases = gen_error_aliases(cell);
-    let metadata_impl = gen_metadata_impl(cell);
-    let methods_impl = gen_methods_impl(cell);
-    let channel_types = gen_channel_types(cell);
+pub fn generate(module: &ModuleDef) -> Result<TokenStream> {
+    let state_struct = gen_state_struct(module);
+    let step_state_struct = gen_step_state_struct(module);
+    let wrapper_struct = gen_wrapper_struct(module);
+    let module_trait_impl = gen_module_trait_impl(module);
+    let migrate_impl = gen_migrate_impl(module);
+    let error_enum = gen_error_enum(module);
+    let error_aliases = gen_error_aliases(module);
+    let metadata_impl = gen_metadata_impl(module);
+    let methods_impl = gen_methods_impl(module);
+    let channel_types = gen_channel_types(module);
 
     Ok(quote! {
         #state_struct
         #step_state_struct
         #wrapper_struct
-        #cell_trait_impl
+        #module_trait_impl
         #migrate_impl
         #error_enum
         #error_aliases
@@ -36,9 +36,9 @@ pub fn generate(cell: &CellDef) -> Result<TokenStream> {
     })
 }
 
-fn gen_state_struct(cell: &CellDef) -> TokenStream {
-    let state_name = format_ident!("{}State", cell.name);
-    let fields: Vec<TokenStream> = cell
+fn gen_state_struct(module: &ModuleDef) -> TokenStream {
+    let state_name = format_ident!("{}State", module.name);
+    let fields: Vec<TokenStream> = module
         .state_fields
         .iter()
         .map(|f| {
@@ -54,9 +54,9 @@ fn gen_state_struct(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn gen_step_state_struct(cell: &CellDef) -> TokenStream {
-    let step_name = format_ident!("{}StepState", cell.name);
-    if cell.step_state_fields.is_empty() {
+fn gen_step_state_struct(module: &ModuleDef) -> TokenStream {
+    let step_name = format_ident!("{}StepState", module.name);
+    if module.step_state_fields.is_empty() {
         return quote! {
             pub struct #step_name;
             impl rs_lang::StepReset for #step_name {
@@ -64,7 +64,7 @@ fn gen_step_state_struct(cell: &CellDef) -> TokenStream {
             }
         };
     }
-    let fields: Vec<TokenStream> = cell
+    let fields: Vec<TokenStream> = module
         .step_state_fields
         .iter()
         .map(|f| {
@@ -73,7 +73,7 @@ fn gen_step_state_struct(cell: &CellDef) -> TokenStream {
             quote! { pub #name: #ty, }
         })
         .collect();
-    let reset_stmts: Vec<TokenStream> = cell
+    let reset_stmts: Vec<TokenStream> = module
         .step_state_fields
         .iter()
         .map(|f| step_reset_stmt(f))
@@ -90,7 +90,7 @@ fn gen_step_state_struct(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn step_reset_stmt(field: &CellField) -> TokenStream {
+fn step_reset_stmt(field: &ModuleField) -> TokenStream {
     let name = &field.name;
     let type_name = extract_type_name(&field.ty);
     match type_name.as_deref() {
@@ -108,11 +108,11 @@ fn step_reset_stmt(field: &CellField) -> TokenStream {
     }
 }
 
-fn gen_wrapper_struct(cell: &CellDef) -> TokenStream {
-    let name = &cell.name;
-    let state_name = format_ident!("{}State", cell.name);
-    let step_name = format_ident!("{}StepState", cell.name);
-    let state_field_inits: Vec<TokenStream> = cell
+fn gen_wrapper_struct(module: &ModuleDef) -> TokenStream {
+    let name = &module.name;
+    let state_name = format_ident!("{}State", module.name);
+    let step_name = format_ident!("{}StepState", module.name);
+    let state_field_inits: Vec<TokenStream> = module
         .state_fields
         .iter()
         .map(|f| {
@@ -120,7 +120,7 @@ fn gen_wrapper_struct(cell: &CellDef) -> TokenStream {
             quote! { #fname: Default::default(), }
         })
         .collect();
-    let step_field_inits: Vec<TokenStream> = cell
+    let step_field_inits: Vec<TokenStream> = module
         .step_state_fields
         .iter()
         .map(|f| {
@@ -128,7 +128,7 @@ fn gen_wrapper_struct(cell: &CellDef) -> TokenStream {
             quote! { #fname: Default::default(), }
         })
         .collect();
-    let step_init = if cell.step_state_fields.is_empty() {
+    let step_init = if module.step_state_fields.is_empty() {
         quote! { #step_name }
     } else {
         quote! { #step_name { #(#step_field_inits)* } }
@@ -141,7 +141,7 @@ fn gen_wrapper_struct(cell: &CellDef) -> TokenStream {
         }
 
         impl #name {
-            /// Create a new cell instance with default state.
+            /// Create a new module instance with default state.
             pub fn new() -> Self {
                 Self {
                     state: #state_name { #(#state_field_inits)* },
@@ -153,15 +153,15 @@ fn gen_wrapper_struct(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn gen_cell_trait_impl(cell: &CellDef) -> TokenStream {
-    let name = &cell.name;
-    let cell_name_str = cell.name.to_string();
-    let version = cell.version;
-    let budget = &cell.budget;
-    let heartbeat = &cell.heartbeat;
+fn gen_module_trait_impl(module: &ModuleDef) -> TokenStream {
+    let name = &module.name;
+    let module_name_str = module.name.to_string();
+    let version = module.version;
+    let budget = &module.budget;
+    let heartbeat = &module.heartbeat;
     quote! {
-        impl rs_lang::Cell for #name {
-            const NAME: &'static str = #cell_name_str;
+        impl rs_lang::Module for #name {
+            const NAME: &'static str = #module_name_str;
             const VERSION: u32 = #version;
             const BUDGET: ::core::time::Duration = #budget;
             const HEARTBEAT: ::core::time::Duration = #heartbeat;
@@ -176,15 +176,15 @@ fn gen_cell_trait_impl(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn gen_migrate_impl(cell: &CellDef) -> TokenStream {
-    let migrate = match &cell.migrate {
+fn gen_migrate_impl(module: &ModuleDef) -> TokenStream {
+    let migrate = match &module.migrate {
         Some(m) => m,
         None => return TokenStream::new(),
     };
-    let state_name = format_ident!("{}State", cell.name);
+    let state_name = format_ident!("{}State", module.name);
     let old_type = match &migrate.from_version {
         MigrateSource::Version(n) => {
-            let old_ident = format_ident!("{}StateV{}", cell.name, n);
+            let old_ident = format_ident!("{}StateV{}", module.name, n);
             quote! { #old_ident }
         }
         MigrateSource::Path(path) => quote! { #path },
@@ -207,10 +207,10 @@ fn gen_migrate_impl(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn gen_error_enum(cell: &CellDef) -> TokenStream {
-    let error_name = format_ident!("{}Error", cell.name);
-    let mut variants = collect_error_variants(cell);
-    let has_async_deadline = cell.methods.iter().any(|m| m.deadline.is_some());
+fn gen_error_enum(module: &ModuleDef) -> TokenStream {
+    let error_name = format_ident!("{}Error", module.name);
+    let mut variants = collect_error_variants(module);
+    let has_async_deadline = module.methods.iter().any(|m| m.deadline.is_some());
     if has_async_deadline && !variants.contains(&"Timeout".to_string()) {
         variants.push("Timeout".to_string());
     }
@@ -239,19 +239,19 @@ fn gen_error_enum(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn gen_error_aliases(_cell: &CellDef) -> TokenStream {
-    // The spec says `Error::Variant` resolves to `{CellName}Error::Variant`
-    // inside cell methods. This is achieved by rewriting `Error` references
-    // in the method token stream to `{CellName}Error` during codegen.
+fn gen_error_aliases(_module: &ModuleDef) -> TokenStream {
+    // The spec says `Error::Variant` resolves to `{ModuleName}Error::Variant`
+    // inside module methods. This is achieved by rewriting `Error` references
+    // in the method token stream to `{ModuleName}Error` during codegen.
     //
     // Token-stream rewriting happens in gen_single_method — the error enum
     // name is substituted wherever `Error` appears in a path position.
     TokenStream::new()
 }
 
-fn collect_error_variants(cell: &CellDef) -> Vec<String> {
+fn collect_error_variants(module: &ModuleDef) -> Vec<String> {
     let mut variants = Vec::new();
-    for method in &cell.methods {
+    for method in &module.methods {
         scan_for_error_variants(&method.body, &mut variants);
     }
     let mut seen = std::collections::HashSet::new();
@@ -284,9 +284,9 @@ fn scan_for_error_variants(stream: &TokenStream, variants: &mut Vec<String>) {
     }
 }
 
-fn gen_metadata_impl(cell: &CellDef) -> TokenStream {
-    let name = &cell.name;
-    let pub_methods: Vec<&CellMethod> = cell
+fn gen_metadata_impl(module: &ModuleDef) -> TokenStream {
+    let name = &module.name;
+    let pub_methods: Vec<&ModuleMethod> = module
         .methods
         .iter()
         .filter(|m| m.vis == MethodVis::Public)
@@ -328,18 +328,19 @@ fn gen_metadata_impl(cell: &CellDef) -> TokenStream {
         })
         .collect();
     quote! {
-        impl rs_lang::CellMetadata for #name {
+        impl rs_lang::ModuleMetadata for #name {
             fn interface() -> &'static [rs_lang::FunctionSignature] {
-                &[#(#sig_exprs),*]
+                const INTERFACE: &[rs_lang::FunctionSignature] = &[#(#sig_exprs),*];
+                INTERFACE
             }
         }
     }
 }
 
-fn gen_methods_impl(cell: &CellDef) -> TokenStream {
-    let name = &cell.name;
-    let error_name = format_ident!("{}Error", cell.name);
-    let method_fns: Vec<TokenStream> = cell
+fn gen_methods_impl(module: &ModuleDef) -> TokenStream {
+    let name = &module.name;
+    let error_name = format_ident!("{}Error", module.name);
+    let method_fns: Vec<TokenStream> = module
         .methods
         .iter()
         .map(|m| gen_single_method(m, &error_name))
@@ -351,7 +352,7 @@ fn gen_methods_impl(cell: &CellDef) -> TokenStream {
     }
 }
 
-fn gen_single_method(method: &CellMethod, error_name: &Ident) -> TokenStream {
+fn gen_single_method(method: &ModuleMethod, error_name: &Ident) -> TokenStream {
     let vis = match method.vis {
         MethodVis::Public => quote! { pub },
         MethodVis::Private => quote! {},
@@ -378,8 +379,9 @@ fn gen_single_method(method: &CellMethod, error_name: &Ident) -> TokenStream {
         if let Some(deadline) = &method.deadline {
             quote! {
                 #(#attrs)*
-                #vis fn #fn_name(#self_param #(#params),*) #ret {
-                    rs_lang::runtime::with_deadline(#deadline, async move #body)
+                #[allow(unknown_lints, rs_unbounded_async)] // deadline checked by the module parser
+                #vis async fn #fn_name(#self_param #(#params),*) #ret {
+                    rs_lang::runtime::with_deadline(#deadline, async move #body).await
                 }
             }
         } else {
@@ -396,15 +398,15 @@ fn gen_single_method(method: &CellMethod, error_name: &Ident) -> TokenStream {
     }
 }
 
-fn gen_channel_types(cell: &CellDef) -> TokenStream {
-    let name = &cell.name;
+fn gen_channel_types(module: &ModuleDef) -> TokenStream {
+    let name = &module.name;
     let mut output = TokenStream::new();
-    if let Some(input_ch) = &cell.input_channel {
+    if let Some(input_ch) = &module.input_channel {
         let alias = format_ident!("{}Input", name);
         let ty = &input_ch.ty;
         output.extend(quote! { pub type #alias = #ty; });
     }
-    if let Some(output_ch) = &cell.output_channel {
+    if let Some(output_ch) = &module.output_channel {
         let alias = format_ident!("{}Output", name);
         let ty = &output_ch.ty;
         output.extend(quote! { pub type #alias = #ty; });
@@ -422,10 +424,10 @@ fn extract_type_name(ty: &Type) -> Option<String> {
     }
 }
 
-/// Rewrite cell-specific names in a token stream.
+/// Rewrite module-specific names in a token stream.
 ///
-/// - `Error` → `{CellName}Error` (in any position)
-/// - `Result<T>` → `core::result::Result<T, {CellName}Error>` (1-arg Result)
+/// - `Error` → `{ModuleName}Error` (in any position)
+/// - `Result<T>` → `core::result::Result<T, {ModuleName}Error>` (1-arg Result)
 fn rewrite_error_ident(stream: &TokenStream, error_name: &Ident) -> TokenStream {
     use proc_macro2::TokenTree;
     let mut out = TokenStream::new();

@@ -18,7 +18,7 @@ fn has_deadline_attr(cx: &LateContext<'_>, def_id: LocalDefId) -> bool {
     for attr in attrs {
         if let Some(ident) = attr.name() {
             let name = ident.as_str();
-            if name == "bounded_async" || name == "rs_bounded_async" || name == "__rs_cell_context" {
+            if name == "bounded_async" || name == "rs_bounded_async" || name == "__rs_module_context" {
                 return true;
             }
         }

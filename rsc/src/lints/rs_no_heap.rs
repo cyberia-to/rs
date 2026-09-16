@@ -65,9 +65,9 @@ fn match_heap_type(path: &str) -> Option<(&'static rustc_lint::Lint, &'static st
         "alloc::string::String" | "std::string::String" =>
             Some((&RS_NO_STRING, "RS503", "use &str or ArrayString<N>")),
         "alloc::sync::Arc" | "std::sync::Arc" =>
-            Some((&RS_NO_REFCOUNT, "RS505", "use cell-owned state or bounded channels")),
+            Some((&RS_NO_REFCOUNT, "RS505", "use module-owned state or bounded channels")),
         "alloc::rc::Rc" | "std::rc::Rc" =>
-            Some((&RS_NO_REFCOUNT, "RS505", "use cell-owned state or bounded channels")),
+            Some((&RS_NO_REFCOUNT, "RS505", "use module-owned state or bounded channels")),
         _ => None,
     }
 }

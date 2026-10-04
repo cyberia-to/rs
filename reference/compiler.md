@@ -4,7 +4,27 @@ tags: cyber, rs, reference
 
 # Compiler Implementation
 
-## Architecture
+## Current implementation and development boundary
+
+The current [`rsc` driver](../rsc/src/main.rs) links installed `rustc_driver`,
+registers Rs lint callbacks and optionally exports MIR. It forwards compilation
+to rustc. The separate [`codegen` plugin](../codegen/src/lib.rs) provides the
+experimental MIR-to-native path; selecting it is separate from the driver.
+Both crates are excluded from the default Cargo workspace.
+
+The [active bootstrap roadmap](../roadmap/verified-bootstrap.md) specifies an own
+Rs frontend/compiler written in restricted Rs, executed first by a Trident
+interpreter on the reviewed nox seed. All RS acceptance gates remain open. The
+rustc path remains development/compatibility infrastructure; it cannot establish
+the accepted root. Full Rust compatibility is a required product contract whose
+coverage must be demonstrated through that roadmap.
+
+The remaining sections retain the historical driver/vendor-patch design and
+planned compatibility targets. Their diagrams, line-count estimates, edition
+commands and CI assertions describe that design; they are not evidence that the
+own frontend, the patch workflow or the full compatibility suites have shipped.
+
+## Historical compatibility-track architecture
 
 ```
 ┌──────────────────────────────────────────────┐

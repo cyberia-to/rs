@@ -33,10 +33,13 @@ The file extension is `.rs`. The edition identifier is `rs`. The compiler binary
 | 6 | [Module Declarations](reference/modules.md) | — | ✓ | Hot-swap + lifecycle |
 | 7 | [Edition Restrictions](reference/restrictions.md) | ✓ | — | No heap, no leaks |
 
-Compiler patch: **~2,000 lines**. Library + macros: **~6,550 lines**. Rust compatibility: **100%**.
+The current compiler driver uses rustc with Rs lint callbacks. Full pinned Rust
+compatibility and the own-source compiler are delivery obligations tracked in the
+[bootstrap roadmap](roadmap/verified-bootstrap.md); their acceptance remains open.
 
 ## Documentation
 
+- **[Development and verified bootstrap](roadmap/verified-bootstrap.md)** — own Rs compiler, Trident bootstrap interpreter, native self-build and full Rust compatibility gates
 - **[Why Rs Exists](docs/explanation/why.md)** — the algebraic foundation
 - **[Design Principles](docs/explanation/design.md)** — superset, editions, zero keywords
 - **[Standard Library](reference/stdlib.md)** — fixed_point, bounded, channel, particle, arena

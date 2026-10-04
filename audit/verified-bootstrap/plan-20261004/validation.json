@@ -1,0 +1,140 @@
+{
+  "status": "passed-documentation-validation",
+  "command": [
+    "python3",
+    "/Users/master/cyber/.worktrees/verified-bootstrap-plan-20261004/soft3/audit/verified-bootstrap/plan-20261004/check-docs.py",
+    "--soft3",
+    "/Users/master/cyber/.worktrees/verified-bootstrap-plan-20261004/soft3",
+    "--rs",
+    "/Users/master/cyber/.worktrees/verified-bootstrap-plan-20261004/rs",
+    "--trident",
+    "/Users/master/cyber/.worktrees/selfhost-0.4-finalization-20261002/whole-proof-helper-v4/trident"
+  ],
+  "base_revision": "01d82825d93129401df064ff3e0c3adae04d852a",
+  "head_at_validation": "01d82825d93129401df064ff3e0c3adae04d852a",
+  "documents_sha256": {
+    "roadmap/verified-bootstrap.md": "522d3ce01cdaabe577335377b0377a6fbe2a52d6df6d3ebfc9ed738bbd05164a",
+    "roadmap/README.md": "535feb67281217d4d3c72e52e323e6c47a054405f393500fe2e4228f80f465e1",
+    "README.md": "f4a693975faf79718772c22efd718be3a254856f8466be3081c49db66eb7934e",
+    "reference/compiler.md": "cfb1ba29b6af374cafc8e5388ffd4d4bd4fc6adb7e8c9a506e171d176ca0b735",
+    ".claude/plans/pure-rust-toolchain.md": "07231fef95296178fe5e58a1990ea1fdfc9f856e1d6b56e26cbf04dd89ea8ab0"
+  },
+  "checks": [
+    "whitespace",
+    "documentation-and-audit-only diff",
+    "new local links and coordinated branch targets resolve locally",
+    "accepted design with all implementation gates open",
+    "agent memory within 1000 lines"
+  ],
+  "resolved_links": [
+    {
+      "document": "roadmap/verified-bootstrap.md",
+      "link": "https://github.com/cyberia-to/soft3/blob/docs/verified-bootstrap-ceremony/docs/verified-bootstrap.md"
+    },
+    {
+      "document": "roadmap/verified-bootstrap.md",
+      "link": "https://github.com/cyberia-to/trident/blob/docs/0.4-dual-implementation-bootstrap/roadmap/verified-bootstrap.md"
+    },
+    {
+      "document": "roadmap/verified-bootstrap.md",
+      "link": "../rsc/src/main.rs"
+    },
+    {
+      "document": "roadmap/verified-bootstrap.md",
+      "link": "../codegen/src/lib.rs"
+    },
+    {
+      "document": "roadmap/verified-bootstrap.md",
+      "link": "../link/src/lib.rs"
+    },
+    {
+      "document": "roadmap/verified-bootstrap.md",
+      "link": "../macho-linker/src/main.rs"
+    },
+    {
+      "document": "roadmap/README.md",
+      "link": "verified-bootstrap.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/registers.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/async.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/deterministic.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/addressed.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/modules.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/restrictions.md"
+    },
+    {
+      "document": "README.md",
+      "link": "roadmap/verified-bootstrap.md"
+    },
+    {
+      "document": "README.md",
+      "link": "roadmap/verified-bootstrap.md"
+    },
+    {
+      "document": "README.md",
+      "link": "docs/explanation/why.md"
+    },
+    {
+      "document": "README.md",
+      "link": "docs/explanation/design.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/stdlib.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/compiler.md"
+    },
+    {
+      "document": "README.md",
+      "link": "reference/errors.md"
+    },
+    {
+      "document": "README.md",
+      "link": "docs/tutorials/cyb-module.md"
+    },
+    {
+      "document": "reference/compiler.md",
+      "link": "../rsc/src/main.rs"
+    },
+    {
+      "document": "reference/compiler.md",
+      "link": "../codegen/src/lib.rs"
+    },
+    {
+      "document": "reference/compiler.md",
+      "link": "../roadmap/verified-bootstrap.md"
+    },
+    {
+      "document": ".claude/plans/pure-rust-toolchain.md",
+      "link": "../../roadmap/verified-bootstrap.md"
+    }
+  ],
+  "inherited_missing_links_unchanged": [
+    {
+      "document": "README.md",
+      "link": "reference/step.md"
+    }
+  ],
+  "claude_markdown_lines": 686,
+  "new_cargo_build_or_test_run": false,
+  "bootstrap_acceptance": "none; this validates planning documents only"
+}

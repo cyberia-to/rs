@@ -218,29 +218,42 @@ The first is a pure-Rust toolchain on macOS. The second isn't. The Mach-O linker
 
 Each phase produces a usable artifact. Estimates use 1 session = 3 focused hours.
 
-## Implementation Status (as of 2026-10-09, revision 01d8282)
+## Implementation Status (as of 2026-10-09, revision 0c356e2)
 
 Measured on this machine, nightly-2025-11-26 installed (the 2026-05 blocker is resolved).
 
 | Phase | Code Status | Deliverable Status |
 |---|---|---|
 | 0 — Inventory | **COMPLETE** | `pure-rust-check`, 574 LOC — verified: `pure-rust-check cargo-lock` on the rs workspace passes (zero non-Rust source deps) |
-| 1 — macOS MVP | **Code complete** | **VERIFIED** — `codegen/tests/run_integration.sh`: exit42 + hello_world compiled by rustc through the Trident dylib (zero LLVM codegen), executed on aarch64-apple-darwin, correct exit codes and stdout |
-| 2 — Mach-O linker | **Code complete** | **Partially verified** — multi-object link of Trident-produced .o files runs (multi_obj exit 42); asm-level exit42 (pure syscall) and hello (dyld bind vs libSystem) pass; ripgrep end-to-end not attempted — deliverable not met |
-| 3 — Rust coverage | **Partial** | **11/11 integration tests pass** (struct, fnptr, cast, size, asm, closure, dyn_trait, fn_trait, multi_obj); TLS, atomics, asm, Len/Repeat, unchecked/saturating intrinsics implemented; deliverable (real crates) not met |
+| 1 — macOS MVP | **Code complete** | **VERIFIED** — `codegen/tests/run_integration.sh`: 11/11 PASS, exit42 + hello_world compiled by rustc through the Trident dylib (zero LLVM codegen), executed on aarch64-apple-darwin |
+| 2 — Mach-O linker | **Code complete** | **Partially verified** — multi-object link of Trident-produced .o files runs (multi_obj exit 42); asm-level exit42 + hello pass; **rlib closure linking implemented** (demand-driven archive members, ld semantics); ripgrep end-to-end not attempted |
+| 3 — Rust coverage | **Partial** | 11/11 integration tests pass; TLS, atomics, asm, Len/Repeat, unchecked/saturating intrinsics, dyn dispatch, rlib emission, allocator shim, cross-crate-inlinable worklist implemented; deliverable (real crates) partially met — see std milestone below |
 | 4 — Darwin ABI | darwin-sys written, 2,457 LOC | Not wired into std; libc still used; deliverable not met |
 
-Verification commands and their results (2026-10-09, HEAD 01d8282):
-- `cargo test --workspace` — all suites green (20+10+5+12+107+1+16 tests).
+Verification commands and their results (2026-10-09, HEAD 0c356e2):
+- `cargo test --workspace` — all suites green (173 tests).
 - `bash codegen/tests/run_integration.sh` — 11/11 PASS.
 - `bash macho-linker/tests/link_integration.sh` — 2/2 PASS.
 - `pure-rust-check cargo-lock` — PASS, no issues.
 
-Phase 3 gaps remaining: multi-byte Repeat fill correctness, float↔int cast (needs FP regs in LIR), rare statement kinds, real-crate verification.
-Phase 4 gap: requires nightly toolchain + modifying std source + `build-std` to verify.
+**std milestone (new, 2026-10-09): a real std binary links and loads.** A program using
+`itoa 1.0.11` + `std` (println, process::exit) compiles through the Trident backend,
+links the whole sysroot rlib closure via macho-linker (demand-driven member inclusion),
+and dyld loads it — zero LLVM codegen, zero ld64, zero clang. Blockers fixed on the way:
+rlib emission via rustc's ArArchiveBuilder; MIR-body type monomorphization (mono_ty);
+Darwin `_` symbol prefixing to interoperate with LLVM-built rlibs; the `___rustc`
+allocator shim (`__rust_alloc*` → libSystem malloc family, mangled with
+`mangle_internal_symbol`); cross-crate-inlinable + `InstanceKind::Intrinsic` bodies
+emitted locally (fixpoint worklist).
 
-Next on the critical path (macOS pure-Rust end-to-end): close Phase 3 by compiling a real
-no-dependency crates.io crate with the Trident backend, then attempt ripgrep.
+**Current blocker:** the std binary faults at runtime early in init — `str x17, [x16]`
+with x16 loaded from `[x3 - 0x118]` (EXC_BAD_ACCESS in drop/copy glue of std's io
+machinery, likely wrong data flow around the BSS-vtable runtime init or a negative-offset
+memory access). Debugged to instruction level; needs a traced session (breakpoint at the
+fault, walk back to the bad pointer producer).
+
+Phase 3 gaps remaining: multi-byte Repeat fill correctness, float↔int cast (needs FP regs in LIR), rare statement kinds, the std runtime fault above, ripgrep end-to-end.
+Phase 4 gap: requires nightly toolchain + modifying std source + `build-std` to verify.
 
 ### Phase 0 — Inventory and gating (2 sessions)
 

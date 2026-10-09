@@ -218,19 +218,29 @@ The first is a pure-Rust toolchain on macOS. The second isn't. The Mach-O linker
 
 Each phase produces a usable artifact. Estimates use 1 session = 3 focused hours.
 
-## Implementation Status (as of 2026-05-26)
+## Implementation Status (as of 2026-10-09, revision 01d8282)
+
+Measured on this machine, nightly-2025-11-26 installed (the 2026-05 blocker is resolved).
 
 | Phase | Code Status | Deliverable Status |
 |---|---|---|
-| 0 — Inventory | **COMPLETE** | `pure-rust-check` crate, 575 LOC |
-| 1 — macOS MVP | **Code complete** | 8 integration tests written; nightly-2025-11-26 toolchain not installed — cannot verify |
-| 2 — Mach-O linker | **Code complete** | macho-linker wired end-to-end; ripgrep not compiled — not verified |
-| 3 — Rust coverage | **Partial** | TLS ✓, atomics ✓, asm ✓, Len/Repeat rvalues ✓, unchecked intrinsics ✓; deliverable not met |
-| 4 — Darwin ABI | **darwin-sys written** | Not wired into std; libc still used; deliverable not met |
+| 0 — Inventory | **COMPLETE** | `pure-rust-check`, 574 LOC — verified: `pure-rust-check cargo-lock` on the rs workspace passes (zero non-Rust source deps) |
+| 1 — macOS MVP | **Code complete** | **VERIFIED** — `codegen/tests/run_integration.sh`: exit42 + hello_world compiled by rustc through the Trident dylib (zero LLVM codegen), executed on aarch64-apple-darwin, correct exit codes and stdout |
+| 2 — Mach-O linker | **Code complete** | **Partially verified** — multi-object link of Trident-produced .o files runs (multi_obj exit 42); asm-level exit42 (pure syscall) and hello (dyld bind vs libSystem) pass; ripgrep end-to-end not attempted — deliverable not met |
+| 3 — Rust coverage | **Partial** | **11/11 integration tests pass** (struct, fnptr, cast, size, asm, closure, dyn_trait, fn_trait, multi_obj); TLS, atomics, asm, Len/Repeat, unchecked/saturating intrinsics implemented; deliverable (real crates) not met |
+| 4 — Darwin ABI | darwin-sys written, 2,457 LOC | Not wired into std; libc still used; deliverable not met |
 
-Phase 3 gaps remaining: multi-byte Repeat fill correctness, float↔int cast (needs FP regs in LIR), rare statement kinds (non-blocking), deliverable verification.
+Verification commands and their results (2026-10-09, HEAD 01d8282):
+- `cargo test --workspace` — all suites green (20+10+5+12+107+1+16 tests).
+- `bash codegen/tests/run_integration.sh` — 11/11 PASS.
+- `bash macho-linker/tests/link_integration.sh` — 2/2 PASS.
+- `pure-rust-check cargo-lock` — PASS, no issues.
+
+Phase 3 gaps remaining: multi-byte Repeat fill correctness, float↔int cast (needs FP regs in LIR), rare statement kinds, real-crate verification.
 Phase 4 gap: requires nightly toolchain + modifying std source + `build-std` to verify.
-Phase 1/2 gap: nightly-2025-11-26 toolchain must be installed on this machine.
+
+Next on the critical path (macOS pure-Rust end-to-end): close Phase 3 by compiling a real
+no-dependency crates.io crate with the Trident backend, then attempt ripgrep.
 
 ### Phase 0 — Inventory and gating (2 sessions)
 

@@ -3,9 +3,12 @@ use rustc_middle::mir::mono::MonoItem;
 use rustc_middle::ty::{self, TyCtxt};
 
 use crate::arm64::Arm64Backend;
-use crate::lir::{Label, LIROp, Reg};
+use crate::lir::{LIROp, Label, Reg};
 use crate::mir2lir::{MirToLir, StaticData, StaticReloc};
-use link::{CallReloc2, DataReloc, EmitInput, FnSymbol, RelocatableInput, StaticCodeReloc, StaticData as LinkData, emit_macho, emit_object};
+use link::{
+    emit_macho, emit_object, CallReloc2, DataReloc, EmitInput, FnSymbol, RelocatableInput,
+    StaticCodeReloc, StaticData as LinkData,
+};
 
 /// Generate LIR ops for the __trident_tls_get(key_ptr: *mut u64, size: usize) -> *mut u8 helper.
 ///
@@ -22,10 +25,10 @@ use link::{CallReloc2, DataReloc, EmitInput, FnSymbol, RelocatableInput, StaticC
 fn make_tls_get_ops() -> Vec<LIROp> {
     let saved_kp = Reg(15); // x19 — saved key_ptr across calls
     let saved_sz = Reg(16); // x20 — saved size across calls
-    let key      = Reg(17); // x21 — current pthread_key_t value
-    let new_ptr  = Reg(18); // x22 — per-thread data pointer
-    let cond     = Reg(19); // x23 — branch condition (0 or 1)
-    let zero     = Reg(20); // x24 — constant 0
+    let key = Reg(17); // x21 — current pthread_key_t value
+    let new_ptr = Reg(18); // x22 — per-thread data pointer
+    let cond = Reg(19); // x23 — branch condition (0 or 1)
+    let zero = Reg(20); // x24 — constant 0
 
     vec![
         LIROp::FnStart("__trident_tls_get".to_string()),
@@ -33,24 +36,29 @@ fn make_tls_get_ops() -> Vec<LIROp> {
         LIROp::Move(saved_kp, Reg(0)),
         LIROp::Move(saved_sz, Reg(1)),
         LIROp::LoadImm(zero, 0),
-
         // key = *key_ptr
-        LIROp::Load { dst: key, base: saved_kp, offset: 0 },
+        LIROp::Load {
+            dst: key,
+            base: saved_kp,
+            offset: 0,
+        },
         LIROp::Eq(cond, key, zero),
         LIROp::Branch {
             cond,
-            if_true:  Label::new("__tls_init"),
+            if_true: Label::new("__tls_init"),
             if_false: Label::new("__tls_have_key"),
         },
-
         // pthread_key_create(key_ptr, NULL)
         LIROp::LabelDef(Label::new("__tls_init")),
         LIROp::Move(Reg(0), saved_kp),
         LIROp::LoadImm(Reg(1), 0),
         LIROp::Call("_pthread_key_create".to_string()),
-        LIROp::Load { dst: key, base: saved_kp, offset: 0 },
+        LIROp::Load {
+            dst: key,
+            base: saved_kp,
+            offset: 0,
+        },
         LIROp::Jump(Label::new("__tls_have_key")),
-
         // ptr = pthread_getspecific(key)
         LIROp::LabelDef(Label::new("__tls_have_key")),
         LIROp::Move(Reg(0), key),
@@ -59,10 +67,9 @@ fn make_tls_get_ops() -> Vec<LIROp> {
         LIROp::Eq(cond, new_ptr, zero),
         LIROp::Branch {
             cond,
-            if_true:  Label::new("__tls_alloc"),
+            if_true: Label::new("__tls_alloc"),
             if_false: Label::new("__tls_done"),
         },
-
         // malloc(size) + zero + pthread_setspecific(key, ptr)
         LIROp::LabelDef(Label::new("__tls_alloc")),
         LIROp::Move(Reg(0), saved_sz),
@@ -74,12 +81,15 @@ fn make_tls_get_ops() -> Vec<LIROp> {
         LIROp::Call("__trident_memset".to_string()),
         // Reload key in case memset clobbered x21 via a call (it won't — memset is a stub,
         // but we reload defensively so the key is fresh from the key slot).
-        LIROp::Load { dst: key, base: saved_kp, offset: 0 },
+        LIROp::Load {
+            dst: key,
+            base: saved_kp,
+            offset: 0,
+        },
         LIROp::Move(Reg(0), key),
         LIROp::Move(Reg(1), new_ptr),
         LIROp::Call("_pthread_setspecific".to_string()),
         LIROp::Jump(Label::new("__tls_done")),
-
         LIROp::LabelDef(Label::new("__tls_done")),
         LIROp::Move(Reg(0), new_ptr),
         LIROp::Return,
@@ -89,8 +99,8 @@ fn make_tls_get_ops() -> Vec<LIROp> {
 
 /// Everything produced by per-crate codegen, passed to join_codegen.
 pub struct TridentOutput {
-    pub binary:     Vec<u8>,   // MH_EXECUTE monolithic binary
-    pub object:     Vec<u8>,   // MH_OBJECT relocatable file
+    pub binary: Vec<u8>, // MH_EXECUTE monolithic binary
+    pub object: Vec<u8>, // MH_OBJECT relocatable file
     pub crate_info: CrateInfo,
 }
 
@@ -142,7 +152,9 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
             // Each provenance entry (offset, prov) records a pointer-sized slot.
             for (offset, prov) in inner.provenance().ptrs().iter() {
                 let byte_off = offset.bytes() as usize;
-                if byte_off + 8 > bytes.len() { continue; }
+                if byte_off + 8 > bytes.len() {
+                    continue;
+                }
                 let prov_alloc_id = prov.alloc_id();
                 use rustc_middle::mir::interpret::GlobalAlloc;
                 match tcx.global_alloc(prov_alloc_id) {
@@ -152,7 +164,7 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
                         all_static_relocs.push(StaticReloc {
                             static_name: name.clone(),
                             byte_offset: byte_off,
-                            fn_symbol:   sym,
+                            fn_symbol: sym,
                         });
                     }
                     GlobalAlloc::Static(target_def_id) => {
@@ -162,14 +174,18 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
                         all_static_relocs.push(StaticReloc {
                             static_name: name.clone(),
                             byte_offset: byte_off,
-                            fn_symbol:   sym,
+                            fn_symbol: sym,
                         });
                     }
                     _ => {}
                 }
             }
             let writable = tcx.is_mutable_static(*def_id);
-            all_statics.push(StaticData { name, bytes, writable });
+            all_statics.push(StaticData {
+                name,
+                bytes,
+                writable,
+            });
         }
     }
 
@@ -187,7 +203,9 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
             }
             Err(e) => {
                 let fn_name = tcx.symbol_name(*instance).name.to_string();
-                tcx.sess.dcx().warn(format!("mir2lir failed for {fn_name}: {e}"));
+                tcx.sess
+                    .dcx()
+                    .warn(format!("mir2lir failed for {fn_name}: {e}"));
             }
         }
     }
@@ -246,12 +264,14 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
             "__trident_memcpy" | "_memcpy" | "memcpy" => memcpy_stub_off,
             "__trident_memset" | "_memset" | "memset" => memset_stub_off,
             "write" | "_write" => write_stub_off,
-            "exit"  | "_exit"  => exit_stub_off,
+            "exit" | "_exit" => exit_stub_off,
             sym => {
                 if let Some(&off) = backend.fn_offsets().get(sym) {
                     off
                 } else {
-                    tcx.sess.dcx().warn(format!("unresolved call symbol: {sym}"));
+                    tcx.sess
+                        .dcx()
+                        .warn(format!("unresolved call symbol: {sym}"));
                     continue;
                 }
             }
@@ -263,10 +283,15 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
 
     let link_data: Vec<LinkData> = all_statics
         .into_iter()
-        .map(|s| LinkData { name: s.name, bytes: s.bytes, writable: s.writable })
+        .map(|s| LinkData {
+            name: s.name,
+            bytes: s.bytes,
+            writable: s.writable,
+        })
         .collect();
 
-    let link_relocs: Vec<DataReloc> = backend.data_relocs()
+    let link_relocs: Vec<DataReloc> = backend
+        .data_relocs()
         .iter()
         .map(|r| DataReloc {
             adrp_offset: r.adrp_offset,
@@ -281,12 +306,13 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         .map(|r| StaticCodeReloc {
             static_name: r.static_name.clone(),
             byte_offset: r.byte_offset,
-            fn_symbol:   r.fn_symbol.clone(),
+            fn_symbol: r.fn_symbol.clone(),
         })
         .collect();
 
     // fn_offsets map for vtable patching in emit_macho.
-    let mut fn_offsets_map: std::collections::HashMap<String, usize> = backend.fn_offsets()
+    let mut fn_offsets_map: std::collections::HashMap<String, usize> = backend
+        .fn_offsets()
         .iter()
         .map(|(k, &v)| (k.clone(), v))
         .collect();
@@ -294,32 +320,66 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
     fn_offsets_map.insert("__trident_memset".to_string(), memset_stub_off);
 
     // Build the relocatable object from the unpatched code (BL slots still 0x94000000).
-    let mut fn_syms: Vec<FnSymbol> = backend.fn_offsets()
+    let mut fn_syms: Vec<FnSymbol> = backend
+        .fn_offsets()
         .iter()
-        .map(|(name, &offset)| FnSymbol { name: name.clone(), offset, is_global: true })
+        .map(|(name, &offset)| FnSymbol {
+            name: name.clone(),
+            offset,
+            is_global: true,
+        })
         .collect();
-    fn_syms.push(FnSymbol { name: "__trident_memcpy".to_string(), offset: memcpy_stub_off, is_global: false });
-    fn_syms.push(FnSymbol { name: "__trident_memset".to_string(), offset: memset_stub_off, is_global: false });
+    fn_syms.push(FnSymbol {
+        name: "__trident_memcpy".to_string(),
+        offset: memcpy_stub_off,
+        is_global: false,
+    });
+    fn_syms.push(FnSymbol {
+        name: "__trident_memset".to_string(),
+        offset: memset_stub_off,
+        is_global: false,
+    });
 
-    let call_relocs2: Vec<CallReloc2> = backend.call_relocs()
+    let call_relocs2: Vec<CallReloc2> = backend
+        .call_relocs()
         .iter()
-        .map(|r| CallReloc2 { offset: r.offset, symbol: r.symbol.clone() })
+        .map(|r| CallReloc2 {
+            offset: r.offset,
+            symbol: r.symbol.clone(),
+        })
         .collect();
 
-    let ro_data: Vec<LinkData> = link_data.iter().filter(|d| !d.writable)
-        .map(|d| LinkData { name: d.name.clone(), bytes: d.bytes.clone(), writable: false })
+    let ro_data: Vec<LinkData> = link_data
+        .iter()
+        .filter(|d| !d.writable)
+        .map(|d| LinkData {
+            name: d.name.clone(),
+            bytes: d.bytes.clone(),
+            writable: false,
+        })
         .collect();
-    let rw_data: Vec<LinkData> = link_data.iter().filter(|d| d.writable)
-        .map(|d| LinkData { name: d.name.clone(), bytes: d.bytes.clone(), writable: true })
+    let rw_data: Vec<LinkData> = link_data
+        .iter()
+        .filter(|d| d.writable)
+        .map(|d| LinkData {
+            name: d.name.clone(),
+            bytes: d.bytes.clone(),
+            writable: true,
+        })
         .collect();
 
     let rel_input = RelocatableInput {
-        code:        &unpatched_code,
+        code: &unpatched_code,
         ro_data,
         rw_data,
         call_relocs: call_relocs2,
-        data_relocs: link_relocs.iter()
-            .map(|r| DataReloc { adrp_offset: r.adrp_offset, add_offset: r.add_offset, symbol: r.symbol.clone() })
+        data_relocs: link_relocs
+            .iter()
+            .map(|r| DataReloc {
+                adrp_offset: r.adrp_offset,
+                add_offset: r.add_offset,
+                symbol: r.symbol.clone(),
+            })
             .collect(),
         fn_syms,
         static_relocs: link_static_relocs.clone(),

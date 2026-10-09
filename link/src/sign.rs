@@ -50,8 +50,8 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     ];
 
     let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
 
     let bit_len = (data.len() as u64).wrapping_mul(8);
@@ -68,12 +68,8 @@ fn sha256(data: &[u8]) -> [u8; 32] {
             w[i] = u32::from_be_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap());
         }
         for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7)
-                ^ w[i - 15].rotate_right(18)
-                ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17)
-                ^ w[i - 2].rotate_right(19)
-                ^ (w[i - 2] >> 10);
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
             w[i] = w[i - 16]
                 .wrapping_add(s0)
                 .wrapping_add(w[i - 7])
@@ -167,7 +163,7 @@ pub fn make_code_signature(binary: &[u8], identifier: &str, exec_seg_limit: u64)
     sig.extend_from_slice(&CS_MAGIC_EMBEDDED_SIGNATURE.to_be_bytes());
     sig.extend_from_slice(&super_length.to_be_bytes());
     sig.extend_from_slice(&1u32.to_be_bytes()); // count = 1 blob
-    // blob index entry: type=0 (CSSLOT_CODEDIRECTORY), offset into super
+                                                // blob index entry: type=0 (CSSLOT_CODEDIRECTORY), offset into super
     sig.extend_from_slice(&0u32.to_be_bytes());
     sig.extend_from_slice(&cd_offset_in_super.to_be_bytes());
 

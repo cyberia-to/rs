@@ -11,27 +11,27 @@ use std::mem;
 // Mach-O constants
 // ---------------------------------------------------------------------------
 
-const MH_MAGIC_64: u32    = 0xFEED_FACF;
+const MH_MAGIC_64: u32 = 0xFEED_FACF;
 const CPU_TYPE_ARM64: i32 = 0x0100_000C;
 const CPU_SUBTYPE_ARM64_ALL: i32 = 0;
-const MH_EXECUTE: u32     = 2;
-const MH_DYLDLINK: u32    = 0x4;
-const MH_PIE: u32         = 0x0020_0000;
-const MH_TWOLEVEL: u32    = 0x80;
+const MH_EXECUTE: u32 = 2;
+const MH_DYLDLINK: u32 = 0x4;
+const MH_PIE: u32 = 0x0020_0000;
+const MH_TWOLEVEL: u32 = 0x80;
 
-const LC_SEGMENT_64: u32          = 0x19;
-const LC_BUILD_VERSION: u32       = 0x32;
-const LC_CODE_SIGNATURE: u32      = 0x1D;
-const LC_LOAD_DYLINKER: u32       = 0xE;
-const LC_MAIN: u32                = 0x8000_0028;
-const LC_LOAD_DYLIB: u32          = 0xC;
-const LC_SYMTAB: u32              = 0x2;
-const LC_DYSYMTAB: u32            = 0xB;
+const LC_SEGMENT_64: u32 = 0x19;
+const LC_BUILD_VERSION: u32 = 0x32;
+const LC_CODE_SIGNATURE: u32 = 0x1D;
+const LC_LOAD_DYLINKER: u32 = 0xE;
+const LC_MAIN: u32 = 0x8000_0028;
+const LC_LOAD_DYLIB: u32 = 0xC;
+const LC_SYMTAB: u32 = 0x2;
+const LC_DYSYMTAB: u32 = 0xB;
 const LC_DYLD_CHAINED_FIXUPS: u32 = 0x8000_0034;
-const LC_DYLD_EXPORTS_TRIE: u32   = 0x8000_0033;
+const LC_DYLD_EXPORTS_TRIE: u32 = 0x8000_0033;
 
 const MH_NOUNDEFS: u32 = 0x1;
-const PROT_R: i32  = 0x01;
+const PROT_R: i32 = 0x01;
 const PROT_RX: i32 = 0x05;
 const VM_BASE: u64 = 0x1_0000_0000;
 const S_CSTRING_LITERALS: u32 = 0x02;
@@ -43,7 +43,11 @@ const MACHO_PAGE: usize = 16384;
 // ---------------------------------------------------------------------------
 
 /// A static data symbol: read-only goes to __TEXT,__cstring; writable to __DATA,__bss.
-pub struct StaticData { pub name: String, pub bytes: Vec<u8>, pub writable: bool }
+pub struct StaticData {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    pub writable: bool,
+}
 
 /// A relocation from machine code into a static data symbol (ADRP + ADD pair).
 pub struct DataReloc {
@@ -78,39 +82,100 @@ pub struct EmitInput<'a> {
 // Mach-O on-disk structures (packed, little-endian)
 // ---------------------------------------------------------------------------
 
-#[repr(C, packed)] struct MachHeader64 {
-    magic: u32, cputype: i32, cpusubtype: i32, filetype: u32,
-    ncmds: u32, sizeofcmds: u32, flags: u32, reserved: u32,
+#[repr(C, packed)]
+struct MachHeader64 {
+    magic: u32,
+    cputype: i32,
+    cpusubtype: i32,
+    filetype: u32,
+    ncmds: u32,
+    sizeofcmds: u32,
+    flags: u32,
+    reserved: u32,
 }
-#[repr(C, packed)] struct SegmentCommand64 {
-    cmd: u32, cmdsize: u32, segname: [u8; 16],
-    vmaddr: u64, vmsize: u64, fileoff: u64, filesize: u64,
-    maxprot: i32, initprot: i32, nsects: u32, flags: u32,
+#[repr(C, packed)]
+struct SegmentCommand64 {
+    cmd: u32,
+    cmdsize: u32,
+    segname: [u8; 16],
+    vmaddr: u64,
+    vmsize: u64,
+    fileoff: u64,
+    filesize: u64,
+    maxprot: i32,
+    initprot: i32,
+    nsects: u32,
+    flags: u32,
 }
-#[repr(C, packed)] struct Section64 {
-    sectname: [u8; 16], segname: [u8; 16], addr: u64, size: u64,
-    offset: u32, align: u32, reloff: u32, nreloc: u32, flags: u32,
-    reserved1: u32, reserved2: u32, reserved3: u32,
+#[repr(C, packed)]
+struct Section64 {
+    sectname: [u8; 16],
+    segname: [u8; 16],
+    addr: u64,
+    size: u64,
+    offset: u32,
+    align: u32,
+    reloff: u32,
+    nreloc: u32,
+    flags: u32,
+    reserved1: u32,
+    reserved2: u32,
+    reserved3: u32,
 }
-#[repr(C, packed)] struct LinkeditDataCommand {
-    cmd: u32, cmdsize: u32, dataoff: u32, datasize: u32,
+#[repr(C, packed)]
+struct LinkeditDataCommand {
+    cmd: u32,
+    cmdsize: u32,
+    dataoff: u32,
+    datasize: u32,
 }
-#[repr(C, packed)] struct BuildVersionCommand {
-    cmd: u32, cmdsize: u32, platform: u32, minos: u32, sdk: u32, ntools: u32,
+#[repr(C, packed)]
+struct BuildVersionCommand {
+    cmd: u32,
+    cmdsize: u32,
+    platform: u32,
+    minos: u32,
+    sdk: u32,
+    ntools: u32,
 }
-#[repr(C, packed)] struct SymtabCommand {
-    cmd: u32, cmdsize: u32, symoff: u32, nsyms: u32, stroff: u32, strsize: u32,
+#[repr(C, packed)]
+struct SymtabCommand {
+    cmd: u32,
+    cmdsize: u32,
+    symoff: u32,
+    nsyms: u32,
+    stroff: u32,
+    strsize: u32,
 }
-#[repr(C, packed)] struct DysymtabCommand {
-    cmd: u32, cmdsize: u32,
-    ilocalsym: u32, nlocalsym: u32, iextdefsym: u32, nextdefsym: u32,
-    iundefsym: u32, nundefsym: u32, tocoff: u32, ntoc: u32,
-    modtaboff: u32, nmodtab: u32, extrefsymoff: u32, nextrefsyms: u32,
-    indirectsymoff: u32, nindirectsyms: u32, extreloff: u32, nextrel: u32,
-    locreloff: u32, nlocrel: u32,
+#[repr(C, packed)]
+struct DysymtabCommand {
+    cmd: u32,
+    cmdsize: u32,
+    ilocalsym: u32,
+    nlocalsym: u32,
+    iextdefsym: u32,
+    nextdefsym: u32,
+    iundefsym: u32,
+    nundefsym: u32,
+    tocoff: u32,
+    ntoc: u32,
+    modtaboff: u32,
+    nmodtab: u32,
+    extrefsymoff: u32,
+    nextrefsyms: u32,
+    indirectsymoff: u32,
+    nindirectsyms: u32,
+    extreloff: u32,
+    nextrel: u32,
+    locreloff: u32,
+    nlocrel: u32,
 }
-#[repr(C, packed)] struct EntryPointCommand {
-    cmd: u32, cmdsize: u32, entryoff: u64, stacksize: u64,
+#[repr(C, packed)]
+struct EntryPointCommand {
+    cmd: u32,
+    cmdsize: u32,
+    entryoff: u64,
+    stacksize: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +199,10 @@ fn align_up(offset: usize, align: usize) -> usize {
     (offset + align - 1) & !(align - 1)
 }
 
-#[inline] fn push_u32(v: &mut Vec<u8>, x: u32) { v.extend_from_slice(&x.to_le_bytes()); }
+#[inline]
+fn push_u32(v: &mut Vec<u8>, x: u32) {
+    v.extend_from_slice(&x.to_le_bytes());
+}
 
 // ---------------------------------------------------------------------------
 // ADRP / ADD instruction encoding helpers
@@ -149,8 +217,12 @@ fn encode_add_imm(rd: u32, rn: u32, imm12: u32) -> u32 {
     0x9100_0000u32 | ((imm12 & 0xFFF) << 10) | ((rn & 0x1F) << 5) | (rd & 0x1F)
 }
 
-fn decode_rd(insn: u32)     -> u32 { insn & 0x1F }
-fn decode_rn_add(insn: u32) -> u32 { (insn >> 5) & 0x1F }
+fn decode_rd(insn: u32) -> u32 {
+    insn & 0x1F
+}
+fn decode_rn_add(insn: u32) -> u32 {
+    (insn >> 5) & 0x1F
+}
 
 // ---------------------------------------------------------------------------
 // __LINKEDIT data builders
@@ -166,13 +238,13 @@ fn make_chained_fixups(seg_count: u32) -> [u8; 56] {
     let imports_off = 32u32 + 4 + 4 * seg_count;
     let mut v = [0u8; 56];
     // 8-word header
-    v[4..8].copy_from_slice(&32u32.to_le_bytes());              // starts_offset
-    v[8..12].copy_from_slice(&imports_off.to_le_bytes());       // imports_offset
-    v[12..16].copy_from_slice(&imports_off.to_le_bytes());      // symbols_offset
-    v[20..24].copy_from_slice(&1u32.to_le_bytes());             // imports_format = DYLD_CHAINED_IMPORT
-    // starts_in_image (at byte 32)
-    v[32..36].copy_from_slice(&seg_count.to_le_bytes());        // seg_count
-    // seg_info_offsets all zero — no fixup chains in any segment
+    v[4..8].copy_from_slice(&32u32.to_le_bytes()); // starts_offset
+    v[8..12].copy_from_slice(&imports_off.to_le_bytes()); // imports_offset
+    v[12..16].copy_from_slice(&imports_off.to_le_bytes()); // symbols_offset
+    v[20..24].copy_from_slice(&1u32.to_le_bytes()); // imports_format = DYLD_CHAINED_IMPORT
+                                                    // starts_in_image (at byte 32)
+    v[32..36].copy_from_slice(&seg_count.to_le_bytes()); // seg_count
+                                                         // seg_info_offsets all zero — no fixup chains in any segment
     v
 }
 
@@ -188,33 +260,45 @@ const S_ZEROFILL: u32 = 1;
 /// Read-only statics go to __TEXT,__cstring.
 /// Writable (BSS) statics go to __DATA,__bss (S_ZEROFILL, no file content).
 pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
-    const SEG: usize = 72;   // SegmentCommand64
-    const SEC: usize = 80;   // Section64
-    const LDS: usize = 16;   // LinkeditDataCommand
+    const SEG: usize = 72; // SegmentCommand64
+    const SEC: usize = 80; // Section64
+    const LDS: usize = 16; // LinkeditDataCommand
 
     // Partition statics into read-only (cstring) and writable (BSS).
     // Own mutable byte copies so we can patch vtable function-pointer slots.
-    let mut ro_data: Vec<(String, Vec<u8>)> = input.data.iter()
+    let mut ro_data: Vec<(String, Vec<u8>)> = input
+        .data
+        .iter()
         .filter(|d| !d.writable)
         .map(|d| (d.name.clone(), d.bytes.clone()))
         .collect();
-    let rw_data: Vec<&StaticData> = input.data.iter().filter(|d|  d.writable).collect();
+    let rw_data: Vec<&StaticData> = input.data.iter().filter(|d| d.writable).collect();
 
     let cstring_size: usize = ro_data.iter().map(|(_, b)| b.len()).sum();
-    let bss_size:     usize = rw_data.iter().map(|d| d.bytes.len()).sum();
+    let bss_size: usize = rw_data.iter().map(|d| d.bytes.len()).sum();
     let has_data = bss_size > 0;
-    let bss_vm_pages = if has_data { align_up(bss_size, MACHO_PAGE) } else { 0 };
+    let bss_vm_pages = if has_data {
+        align_up(bss_size, MACHO_PAGE)
+    } else {
+        0
+    };
 
     // Symbol-to-offset maps for relocation patching.
     let mut ro_offsets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut rw_offsets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     {
         let mut c = 0usize;
-        for (name, bytes) in &ro_data { ro_offsets.insert(name.clone(), c); c += bytes.len(); }
+        for (name, bytes) in &ro_data {
+            ro_offsets.insert(name.clone(), c);
+            c += bytes.len();
+        }
     }
     {
         let mut c = 0usize;
-        for s in &rw_data { rw_offsets.insert(s.name.clone(), c); c += s.bytes.len(); }
+        for s in &rw_data {
+            rw_offsets.insert(s.name.clone(), c);
+            c += s.bytes.len();
+        }
     }
 
     // Load-command table sizes.
@@ -232,38 +316,38 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
         + 24                              // LC_BUILD_VERSION
         + 24                              // LC_MAIN
         + 56                              // LC_LOAD_DYLIB libSystem
-        + LDS;                            // LC_CODE_SIGNATURE
+        + LDS; // LC_CODE_SIGNATURE
 
-    let header_total     = 32 + total_lc;
+    let header_total = 32 + total_lc;
     let code_file_offset = align_up(header_total, 16);
-    let code_size        = input.code.len();
+    let code_size = input.code.len();
 
     let cstring_file_offset = align_up(code_file_offset + code_size, 4);
-    let content_end         = cstring_file_offset + cstring_size;
-    let linkedit_off        = align_up(content_end, MACHO_PAGE);
+    let content_end = cstring_file_offset + cstring_size;
+    let linkedit_off = align_up(content_end, MACHO_PAGE);
 
     // VM layout.
-    let code_vm_addr    = VM_BASE + code_file_offset as u64;
+    let code_vm_addr = VM_BASE + code_file_offset as u64;
     let cstring_vm_addr = VM_BASE + cstring_file_offset as u64;
-    let text_vmsize     = linkedit_off as u64;
+    let text_vmsize = linkedit_off as u64;
 
-    let data_vmaddr      = VM_BASE + text_vmsize;                  // right after __TEXT
-    let linkedit_vmaddr  = data_vmaddr + bss_vm_pages as u64;
+    let data_vmaddr = VM_BASE + text_vmsize; // right after __TEXT
+    let linkedit_vmaddr = data_vmaddr + bss_vm_pages as u64;
 
     // __LINKEDIT layout (unchanged by __DATA presence since BSS has no file content).
     const CHAIN_SIZE: usize = 56;
-    const TRIE_SIZE: usize  = 4;
-    const STR_SIZE: usize   = 1;
-    let chain_off  = linkedit_off;
-    let trie_off   = chain_off + CHAIN_SIZE;
-    let str_off    = trie_off  + TRIE_SIZE;
+    const TRIE_SIZE: usize = 4;
+    const STR_SIZE: usize = 1;
+    let chain_off = linkedit_off;
+    let trie_off = chain_off + CHAIN_SIZE;
+    let str_off = trie_off + TRIE_SIZE;
     let code_limit = align_up(str_off + STR_SIZE, 8);
 
-    let identifier        = "pure.rs";
-    let sig_off           = code_limit;
-    let sig_size          = sign::signature_size(code_limit, identifier);
+    let identifier = "pure.rs";
+    let sig_off = code_limit;
+    let sig_size = sign::signature_size(code_limit, identifier);
     let linkedit_filesize = sig_off + sig_size - linkedit_off;
-    let linkedit_vmsize   = align_up(linkedit_filesize, MACHO_PAGE) as u64;
+    let linkedit_vmsize = align_up(linkedit_filesize, MACHO_PAGE) as u64;
 
     // Patch vtable function-pointer slots: write the absolute VM address of each
     // function into the corresponding ro_data (or rw_data) static byte slice.
@@ -307,112 +391,222 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
         } else {
             panic!("unknown reloc symbol: {}", r.symbol);
         };
-        let adrp_pc    = code_vm_addr + r.adrp_offset as u64;
+        let adrp_pc = code_vm_addr + r.adrp_offset as u64;
         let page_delta = (((target & !0xFFF) as i64) - ((adrp_pc & !0xFFF) as i64)) >> 12;
-        assert!(page_delta >= -(1 << 20) && page_delta < (1 << 20), "ADRP out of range");
+        assert!(
+            page_delta >= -(1 << 20) && page_delta < (1 << 20),
+            "ADRP out of range"
+        );
         let adrp_raw = u32::from_le_bytes(code[r.adrp_offset..][..4].try_into().unwrap());
-        let add_raw  = u32::from_le_bytes(code[r.add_offset ..][..4].try_into().unwrap());
-        code[r.adrp_offset..][..4].copy_from_slice(
-            &encode_adrp(decode_rd(adrp_raw), page_delta as i32).to_le_bytes());
-        code[r.add_offset ..][..4].copy_from_slice(
-            &encode_add_imm(decode_rd(add_raw), decode_rn_add(add_raw),
-                            (target & 0xFFF) as u32).to_le_bytes());
+        let add_raw = u32::from_le_bytes(code[r.add_offset..][..4].try_into().unwrap());
+        code[r.adrp_offset..][..4]
+            .copy_from_slice(&encode_adrp(decode_rd(adrp_raw), page_delta as i32).to_le_bytes());
+        code[r.add_offset..][..4].copy_from_slice(
+            &encode_add_imm(
+                decode_rd(add_raw),
+                decode_rn_add(add_raw),
+                (target & 0xFFF) as u32,
+            )
+            .to_le_bytes(),
+        );
     }
 
     let mut out: Vec<u8> = Vec::with_capacity(sig_off + sig_size + 64);
 
     // Mach-O header.
-    out.extend_from_slice(unsafe { as_bytes(&MachHeader64 {
-        magic: MH_MAGIC_64, cputype: CPU_TYPE_ARM64, cpusubtype: CPU_SUBTYPE_ARM64_ALL,
-        filetype: MH_EXECUTE, ncmds, sizeofcmds: total_lc as u32,
-        flags: MH_NOUNDEFS | MH_DYLDLINK | MH_PIE | MH_TWOLEVEL, reserved: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&MachHeader64 {
+            magic: MH_MAGIC_64,
+            cputype: CPU_TYPE_ARM64,
+            cpusubtype: CPU_SUBTYPE_ARM64_ALL,
+            filetype: MH_EXECUTE,
+            ncmds,
+            sizeofcmds: total_lc as u32,
+            flags: MH_NOUNDEFS | MH_DYLDLINK | MH_PIE | MH_TWOLEVEL,
+            reserved: 0,
+        })
+    });
 
     // LC_SEGMENT_64 __PAGEZERO
-    out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-        cmd: LC_SEGMENT_64, cmdsize: SEG as u32, segname: name16("__PAGEZERO"),
-        vmaddr: 0, vmsize: VM_BASE, fileoff: 0, filesize: 0,
-        maxprot: 0, initprot: 0, nsects: 0, flags: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&SegmentCommand64 {
+            cmd: LC_SEGMENT_64,
+            cmdsize: SEG as u32,
+            segname: name16("__PAGEZERO"),
+            vmaddr: 0,
+            vmsize: VM_BASE,
+            fileoff: 0,
+            filesize: 0,
+            maxprot: 0,
+            initprot: 0,
+            nsects: 0,
+            flags: 0,
+        })
+    });
 
     // LC_SEGMENT_64 __TEXT + 2 sections
-    out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-        cmd: LC_SEGMENT_64, cmdsize: (SEG + 2*SEC) as u32, segname: name16("__TEXT"),
-        vmaddr: VM_BASE, vmsize: text_vmsize, fileoff: 0, filesize: text_vmsize,
-        maxprot: PROT_RX, initprot: PROT_RX, nsects: 2, flags: 0,
-    }) });
-    out.extend_from_slice(unsafe { as_bytes(&Section64 {
-        sectname: name16("__text"), segname: name16("__TEXT"),
-        addr: code_vm_addr, size: code_size as u64,
-        offset: code_file_offset as u32, align: 2,
-        reloff: 0, nreloc: 0, flags: 0x8000_0400,
-        reserved1: 0, reserved2: 0, reserved3: 0,
-    }) });
-    out.extend_from_slice(unsafe { as_bytes(&Section64 {
-        sectname: name16("__cstring"), segname: name16("__TEXT"),
-        addr: cstring_vm_addr, size: cstring_size as u64,
-        offset: if cstring_size > 0 { cstring_file_offset as u32 } else { 0 },
-        align: 0, reloff: 0, nreloc: 0, flags: S_CSTRING_LITERALS,
-        reserved1: 0, reserved2: 0, reserved3: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&SegmentCommand64 {
+            cmd: LC_SEGMENT_64,
+            cmdsize: (SEG + 2 * SEC) as u32,
+            segname: name16("__TEXT"),
+            vmaddr: VM_BASE,
+            vmsize: text_vmsize,
+            fileoff: 0,
+            filesize: text_vmsize,
+            maxprot: PROT_RX,
+            initprot: PROT_RX,
+            nsects: 2,
+            flags: 0,
+        })
+    });
+    out.extend_from_slice(unsafe {
+        as_bytes(&Section64 {
+            sectname: name16("__text"),
+            segname: name16("__TEXT"),
+            addr: code_vm_addr,
+            size: code_size as u64,
+            offset: code_file_offset as u32,
+            align: 2,
+            reloff: 0,
+            nreloc: 0,
+            flags: 0x8000_0400,
+            reserved1: 0,
+            reserved2: 0,
+            reserved3: 0,
+        })
+    });
+    out.extend_from_slice(unsafe {
+        as_bytes(&Section64 {
+            sectname: name16("__cstring"),
+            segname: name16("__TEXT"),
+            addr: cstring_vm_addr,
+            size: cstring_size as u64,
+            offset: if cstring_size > 0 {
+                cstring_file_offset as u32
+            } else {
+                0
+            },
+            align: 0,
+            reloff: 0,
+            nreloc: 0,
+            flags: S_CSTRING_LITERALS,
+            reserved1: 0,
+            reserved2: 0,
+            reserved3: 0,
+        })
+    });
 
     // LC_SEGMENT_64 __DATA + __bss section (only when writable statics exist).
     if has_data {
-        out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-            cmd: LC_SEGMENT_64, cmdsize: (SEG + SEC) as u32, segname: name16("__DATA"),
-            vmaddr: data_vmaddr, vmsize: bss_vm_pages as u64,
-            fileoff: linkedit_off as u64,  // S_ZEROFILL: no file content
-            filesize: 0,
-            maxprot: PROT_RW, initprot: PROT_RW, nsects: 1, flags: 0,
-        }) });
-        out.extend_from_slice(unsafe { as_bytes(&Section64 {
-            sectname: name16("__bss"), segname: name16("__DATA"),
-            addr: data_vmaddr, size: bss_size as u64,
-            offset: 0,           // S_ZEROFILL: no file offset
-            align: 3,            // 8-byte align
-            reloff: 0, nreloc: 0,
-            flags: S_ZEROFILL,
-            reserved1: 0, reserved2: 0, reserved3: 0,
-        }) });
+        out.extend_from_slice(unsafe {
+            as_bytes(&SegmentCommand64 {
+                cmd: LC_SEGMENT_64,
+                cmdsize: (SEG + SEC) as u32,
+                segname: name16("__DATA"),
+                vmaddr: data_vmaddr,
+                vmsize: bss_vm_pages as u64,
+                fileoff: linkedit_off as u64, // S_ZEROFILL: no file content
+                filesize: 0,
+                maxprot: PROT_RW,
+                initprot: PROT_RW,
+                nsects: 1,
+                flags: 0,
+            })
+        });
+        out.extend_from_slice(unsafe {
+            as_bytes(&Section64 {
+                sectname: name16("__bss"),
+                segname: name16("__DATA"),
+                addr: data_vmaddr,
+                size: bss_size as u64,
+                offset: 0, // S_ZEROFILL: no file offset
+                align: 3,  // 8-byte align
+                reloff: 0,
+                nreloc: 0,
+                flags: S_ZEROFILL,
+                reserved1: 0,
+                reserved2: 0,
+                reserved3: 0,
+            })
+        });
     }
 
     // LC_SEGMENT_64 __LINKEDIT
-    out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-        cmd: LC_SEGMENT_64, cmdsize: SEG as u32, segname: name16("__LINKEDIT"),
-        vmaddr: linkedit_vmaddr, vmsize: linkedit_vmsize,
-        fileoff: linkedit_off as u64, filesize: linkedit_filesize as u64,
-        maxprot: PROT_R, initprot: PROT_R, nsects: 0, flags: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&SegmentCommand64 {
+            cmd: LC_SEGMENT_64,
+            cmdsize: SEG as u32,
+            segname: name16("__LINKEDIT"),
+            vmaddr: linkedit_vmaddr,
+            vmsize: linkedit_vmsize,
+            fileoff: linkedit_off as u64,
+            filesize: linkedit_filesize as u64,
+            maxprot: PROT_R,
+            initprot: PROT_R,
+            nsects: 0,
+            flags: 0,
+        })
+    });
 
     // LC_DYLD_CHAINED_FIXUPS
     let seg_count = if has_data { 4u32 } else { 3u32 };
-    out.extend_from_slice(unsafe { as_bytes(&LinkeditDataCommand {
-        cmd: LC_DYLD_CHAINED_FIXUPS, cmdsize: LDS as u32,
-        dataoff: chain_off as u32, datasize: CHAIN_SIZE as u32,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&LinkeditDataCommand {
+            cmd: LC_DYLD_CHAINED_FIXUPS,
+            cmdsize: LDS as u32,
+            dataoff: chain_off as u32,
+            datasize: CHAIN_SIZE as u32,
+        })
+    });
 
     // LC_DYLD_EXPORTS_TRIE
-    out.extend_from_slice(unsafe { as_bytes(&LinkeditDataCommand {
-        cmd: LC_DYLD_EXPORTS_TRIE, cmdsize: LDS as u32,
-        dataoff: trie_off as u32, datasize: TRIE_SIZE as u32,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&LinkeditDataCommand {
+            cmd: LC_DYLD_EXPORTS_TRIE,
+            cmdsize: LDS as u32,
+            dataoff: trie_off as u32,
+            datasize: TRIE_SIZE as u32,
+        })
+    });
 
     // LC_SYMTAB (0 symbols, 1-byte strtab)
-    out.extend_from_slice(unsafe { as_bytes(&SymtabCommand {
-        cmd: LC_SYMTAB, cmdsize: 24,
-        symoff: str_off as u32, nsyms: 0,
-        stroff: str_off as u32, strsize: STR_SIZE as u32,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&SymtabCommand {
+            cmd: LC_SYMTAB,
+            cmdsize: 24,
+            symoff: str_off as u32,
+            nsyms: 0,
+            stroff: str_off as u32,
+            strsize: STR_SIZE as u32,
+        })
+    });
 
     // LC_DYSYMTAB
-    out.extend_from_slice(unsafe { as_bytes(&DysymtabCommand {
-        cmd: LC_DYSYMTAB, cmdsize: 80,
-        ilocalsym: 0, nlocalsym: 0, iextdefsym: 0, nextdefsym: 0,
-        iundefsym: 0, nundefsym: 0, tocoff: 0, ntoc: 0,
-        modtaboff: 0, nmodtab: 0, extrefsymoff: 0, nextrefsyms: 0,
-        indirectsymoff: 0, nindirectsyms: 0, extreloff: 0, nextrel: 0,
-        locreloff: 0, nlocrel: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&DysymtabCommand {
+            cmd: LC_DYSYMTAB,
+            cmdsize: 80,
+            ilocalsym: 0,
+            nlocalsym: 0,
+            iextdefsym: 0,
+            nextdefsym: 0,
+            iundefsym: 0,
+            nundefsym: 0,
+            tocoff: 0,
+            ntoc: 0,
+            modtaboff: 0,
+            nmodtab: 0,
+            extrefsymoff: 0,
+            nextrefsyms: 0,
+            indirectsymoff: 0,
+            nindirectsyms: 0,
+            extreloff: 0,
+            nextrel: 0,
+            locreloff: 0,
+            nlocrel: 0,
+        })
+    });
 
     // LC_LOAD_DYLINKER
     push_u32(&mut out, LC_LOAD_DYLINKER);
@@ -422,17 +616,26 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
     out.extend_from_slice(&[0u8; 6]);
 
     // LC_BUILD_VERSION (macOS 15.0)
-    out.extend_from_slice(unsafe { as_bytes(&BuildVersionCommand {
-        cmd: LC_BUILD_VERSION, cmdsize: 24, platform: 1,
-        minos: 0x000F_0000, sdk: 0x000F_0000, ntools: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&BuildVersionCommand {
+            cmd: LC_BUILD_VERSION,
+            cmdsize: 24,
+            platform: 1,
+            minos: 0x000F_0000,
+            sdk: 0x000F_0000,
+            ntools: 0,
+        })
+    });
 
     // LC_MAIN
-    out.extend_from_slice(unsafe { as_bytes(&EntryPointCommand {
-        cmd: LC_MAIN, cmdsize: 24,
-        entryoff: (code_file_offset + input.entry_offset) as u64,
-        stacksize: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&EntryPointCommand {
+            cmd: LC_MAIN,
+            cmdsize: 24,
+            entryoff: (code_file_offset + input.entry_offset) as u64,
+            stacksize: 0,
+        })
+    });
 
     // LC_LOAD_DYLIB /usr/lib/libSystem.B.dylib (56 bytes)
     push_u32(&mut out, LC_LOAD_DYLIB);
@@ -445,10 +648,14 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
     out.extend_from_slice(&[0u8; 5]);
 
     // LC_CODE_SIGNATURE
-    out.extend_from_slice(unsafe { as_bytes(&LinkeditDataCommand {
-        cmd: LC_CODE_SIGNATURE, cmdsize: LDS as u32,
-        dataoff: sig_off as u32, datasize: sig_size as u32,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&LinkeditDataCommand {
+            cmd: LC_CODE_SIGNATURE,
+            cmdsize: LDS as u32,
+            dataoff: sig_off as u32,
+            datasize: sig_size as u32,
+        })
+    });
 
     debug_assert_eq!(out.len(), header_total, "LC size mismatch");
 
@@ -456,7 +663,9 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
     out.resize(code_file_offset, 0);
     out.extend_from_slice(&code);
     out.resize(cstring_file_offset, 0);
-    for (_, bytes) in &ro_data { out.extend_from_slice(bytes); }  // read-only data only
+    for (_, bytes) in &ro_data {
+        out.extend_from_slice(bytes);
+    } // read-only data only
     out.resize(linkedit_off, 0);
     // BSS statics have no file content — dyld zero-initialises them at load time.
 
@@ -483,54 +692,54 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
 const MH_OBJECT: u32 = 0x1;
 
 // ARM64 relocation types (arm64/reloc.h)
-const ARM64_RELOC_BRANCH26:  u32 = 2;
-const ARM64_RELOC_PAGE21:    u32 = 3;
+const ARM64_RELOC_BRANCH26: u32 = 2;
+const ARM64_RELOC_PAGE21: u32 = 3;
 const ARM64_RELOC_PAGEOFF12: u32 = 4;
 
 // nlist64 n_type values
-const N_EXT:  u8 = 0x01;   // external symbol bit
-const N_SECT: u8 = 0x0E;   // symbol defined in a section (local)
-// global defined = N_SECT | N_EXT = 0x0F
-// undefined extern = N_EXT alone = 0x01
+const N_EXT: u8 = 0x01; // external symbol bit
+const N_SECT: u8 = 0x0E; // symbol defined in a section (local)
+                         // global defined = N_SECT | N_EXT = 0x0F
+                         // undefined extern = N_EXT alone = 0x01
 
 /// A defined function symbol within __text.
 pub struct FnSymbol {
     pub name: String,
-    pub offset: usize,   // byte offset within __text
+    pub offset: usize, // byte offset within __text
     pub is_global: bool,
 }
 
 /// A BL instruction relocation targeting a named symbol.
 pub struct CallReloc2 {
-    pub offset: usize,   // byte offset of BL instruction in __text
-    pub symbol: String,  // target symbol name
+    pub offset: usize,  // byte offset of BL instruction in __text
+    pub symbol: String, // target symbol name
 }
 
 /// Input for the MH_OBJECT emitter.
 pub struct RelocatableInput<'a> {
-    pub code:         &'a [u8],
-    pub ro_data:      Vec<StaticData>,        // string literals → __TEXT,__cstring
-    pub rw_data:      Vec<StaticData>,        // writable statics → __DATA,__bss (zerofill)
-    pub call_relocs:  Vec<CallReloc2>,        // BL relocations for function calls
-    pub data_relocs:  Vec<DataReloc>,         // ADRP+ADD pairs for data references
-    pub fn_syms:      Vec<FnSymbol>,          // defined function symbols
-    pub static_relocs: Vec<StaticCodeReloc>,  // vtable fn-ptr slots → UNSIGNED relocs in __cstring
+    pub code: &'a [u8],
+    pub ro_data: Vec<StaticData>, // string literals → __TEXT,__cstring
+    pub rw_data: Vec<StaticData>, // writable statics → __DATA,__bss (zerofill)
+    pub call_relocs: Vec<CallReloc2>, // BL relocations for function calls
+    pub data_relocs: Vec<DataReloc>, // ADRP+ADD pairs for data references
+    pub fn_syms: Vec<FnSymbol>,   // defined function symbols
+    pub static_relocs: Vec<StaticCodeReloc>, // vtable fn-ptr slots → UNSIGNED relocs in __cstring
 }
 
 // Mach-O relocation entry: 8 bytes.
 #[repr(C, packed)]
 struct RelocationInfo {
     r_address: i32,
-    r_info:    u32,   // packed: symbolnum[23:0] | pcrel[24] | length[26:25] | extern[27] | type[31:28]
+    r_info: u32, // packed: symbolnum[23:0] | pcrel[24] | length[26:25] | extern[27] | type[31:28]
 }
 
 // nlist64 symbol table entry: 16 bytes.
 #[repr(C, packed)]
 struct Nlist64 {
-    n_strx:  u32,
-    n_type:  u8,
-    n_sect:  u8,
-    n_desc:  u16,
+    n_strx: u32,
+    n_type: u8,
+    n_sect: u8,
+    n_desc: u16,
     n_value: u64,
 }
 
@@ -565,13 +774,13 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
 
     // Determine which optional sections exist.
     let has_cstring = !input.ro_data.is_empty();
-    let has_bss     = !input.rw_data.is_empty();
+    let has_bss = !input.rw_data.is_empty();
 
     // Section index map (1-based for n_sect):
     //   1 = __text
     //   2 = __cstring  (if present, else absent)
     //   3 = __bss      (if present, else 2 if no cstring)
-    let text_sect_idx: u8   = 1;
+    let text_sect_idx: u8 = 1;
     let cstring_sect_idx: u8 = if has_cstring { 2 } else { 0 };
     let bss_sect_idx: u8 = match (has_cstring, has_bss) {
         (_, false) => 0,
@@ -579,12 +788,11 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
         (false, true) => 2,
     };
 
-    let nsects: u32 = 1
-        + if has_cstring { 1 } else { 0 }
-        + if has_bss     { 1 } else { 0 };
+    let nsects: u32 = 1 + if has_cstring { 1 } else { 0 } + if has_bss { 1 } else { 0 };
 
     // Accumulate cstring offsets (offset within __cstring section).
-    let mut cstring_offsets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut cstring_offsets: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     {
         let mut pos = 0usize;
         for s in &input.ro_data {
@@ -595,7 +803,8 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     let cstring_size: usize = input.ro_data.iter().map(|s| s.bytes.len()).sum();
 
     // BSS offsets (section-relative).
-    let mut bss_offsets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut bss_offsets: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     {
         let mut pos = 0usize;
         for s in &input.rw_data {
@@ -638,9 +847,9 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     // Symbol ordering: local fn_syms, global fn_syms, local data syms, global data syms, undefs.
     // In practice fn_syms has is_global flag; data symbols default to local.
     struct SymEntry {
-        name:    String,
-        n_type:  u8,
-        n_sect:  u8,
+        name: String,
+        n_type: u8,
+        n_sect: u8,
         n_value: u64,
     }
 
@@ -650,9 +859,9 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     for fs in &input.fn_syms {
         if !fs.is_global {
             sym_entries.push(SymEntry {
-                name:    fs.name.clone(),
-                n_type:  N_SECT,
-                n_sect:  text_sect_idx,
+                name: fs.name.clone(),
+                n_type: N_SECT,
+                n_sect: text_sect_idx,
                 n_value: fs.offset as u64,
             });
         }
@@ -661,9 +870,9 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     if has_cstring {
         for s in &input.ro_data {
             sym_entries.push(SymEntry {
-                name:    s.name.clone(),
-                n_type:  N_SECT,
-                n_sect:  cstring_sect_idx,
+                name: s.name.clone(),
+                n_type: N_SECT,
+                n_sect: cstring_sect_idx,
                 n_value: *cstring_offsets.get(&s.name).unwrap() as u64,
             });
         }
@@ -672,9 +881,9 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     if has_bss {
         for s in &input.rw_data {
             sym_entries.push(SymEntry {
-                name:    s.name.clone(),
-                n_type:  N_SECT,
-                n_sect:  bss_sect_idx,
+                name: s.name.clone(),
+                n_type: N_SECT,
+                n_sect: bss_sect_idx,
                 n_value: *bss_offsets.get(&s.name).unwrap() as u64,
             });
         }
@@ -686,9 +895,9 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     for fs in &input.fn_syms {
         if fs.is_global {
             sym_entries.push(SymEntry {
-                name:    fs.name.clone(),
-                n_type:  N_SECT | N_EXT,
-                n_sect:  text_sect_idx,
+                name: fs.name.clone(),
+                n_type: N_SECT | N_EXT,
+                n_sect: text_sect_idx,
                 n_value: fs.offset as u64,
             });
         }
@@ -699,15 +908,15 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     // Undefined externals.
     for name in &undef_names {
         sym_entries.push(SymEntry {
-            name:    name.clone(),
-            n_type:  N_EXT,
-            n_sect:  0,
+            name: name.clone(),
+            n_type: N_EXT,
+            n_sect: 0,
             n_value: 0,
         });
     }
 
     let n_undef = sym_entries.len() as u32 - n_local - n_global;
-    let nsyms   = sym_entries.len() as u32;
+    let nsyms = sym_entries.len() as u32;
 
     // Build string table: \0 + name\0 for each entry.
     let mut strtab: Vec<u8> = vec![0u8];
@@ -731,7 +940,8 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     // -----------------------------------------------------------------------
     let mut text_relocs: Vec<RelocationInfo> = Vec::new();
     for cr in &input.call_relocs {
-        let sym_idx = *sym_index.get(&cr.symbol)
+        let sym_idx = *sym_index
+            .get(&cr.symbol)
             .unwrap_or_else(|| panic!("call reloc symbol not in table: {}", cr.symbol));
         text_relocs.push(RelocationInfo {
             r_address: cr.offset as i32,
@@ -739,7 +949,8 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
         });
     }
     for dr in &input.data_relocs {
-        let sym_idx = *sym_index.get(&dr.symbol)
+        let sym_idx = *sym_index
+            .get(&dr.symbol)
             .unwrap_or_else(|| panic!("data reloc symbol not in table: {}", dr.symbol));
         // ADRP: PAGE21, pcrel=1, extern=1
         text_relocs.push(RelocationInfo {
@@ -783,14 +994,14 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     let header_total: usize = header_size + total_lc;
 
     // Section data immediately after load commands (no padding needed for ARM64 .o).
-    let text_off:    usize = header_total;
-    let text_size:   usize = input.code.len();
+    let text_off: usize = header_total;
+    let text_size: usize = input.code.len();
     let cstring_off: usize = align_up(text_off + text_size, 4);
-    let data_end:    usize = cstring_off + cstring_size;
+    let data_end: usize = cstring_off + cstring_size;
 
     // Relocation entries follow section data (8-byte aligned).
-    let text_reloc_off:    usize = align_up(data_end, 4);
-    let text_reloc_end:    usize = text_reloc_off + n_text_relocs as usize * RELOC_SIZE;
+    let text_reloc_off: usize = align_up(data_end, 4);
+    let text_reloc_end: usize = text_reloc_off + n_text_relocs as usize * RELOC_SIZE;
     let cstring_reloc_off: usize = text_reloc_end;
     let cstring_reloc_end: usize = cstring_reloc_off + n_cstring_relocs as usize * RELOC_SIZE;
 
@@ -805,49 +1016,84 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(total_size + 64);
 
     // Mach-O header.
-    out.extend_from_slice(unsafe { as_bytes(&MachHeader64 {
-        magic: MH_MAGIC_64, cputype: CPU_TYPE_ARM64, cpusubtype: CPU_SUBTYPE_ARM64_ALL,
-        filetype: MH_OBJECT, ncmds: 2,
-        sizeofcmds: total_lc as u32,
-        flags: 0, reserved: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&MachHeader64 {
+            magic: MH_MAGIC_64,
+            cputype: CPU_TYPE_ARM64,
+            cpusubtype: CPU_SUBTYPE_ARM64_ALL,
+            filetype: MH_OBJECT,
+            ncmds: 2,
+            sizeofcmds: total_lc as u32,
+            flags: 0,
+            reserved: 0,
+        })
+    });
 
     // LC_SEGMENT_64 (single segment, segname="" for MH_OBJECT).
     // vmaddr=0, vmsize=covers all sections, fileoff=0.
     let seg_vmsize: u64 = (cstring_off + cstring_size + bss_size) as u64;
-    out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-        cmd: LC_SEGMENT_64, cmdsize: lc_seg_size as u32,
-        segname: [0u8; 16],
-        vmaddr: 0, vmsize: seg_vmsize,
-        fileoff: 0, filesize: (data_end) as u64,
-        maxprot: PROT_RX, initprot: PROT_RX,
-        nsects, flags: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&SegmentCommand64 {
+            cmd: LC_SEGMENT_64,
+            cmdsize: lc_seg_size as u32,
+            segname: [0u8; 16],
+            vmaddr: 0,
+            vmsize: seg_vmsize,
+            fileoff: 0,
+            filesize: (data_end) as u64,
+            maxprot: PROT_RX,
+            initprot: PROT_RX,
+            nsects,
+            flags: 0,
+        })
+    });
 
     // Section: __TEXT,__text
-    out.extend_from_slice(unsafe { as_bytes(&Section64 {
-        sectname: name16("__text"), segname: name16("__TEXT"),
-        addr: 0, size: text_size as u64,
-        offset: text_off as u32, align: 2,
-        reloff: if n_text_relocs > 0 { text_reloc_off as u32 } else { 0 },
-        nreloc: n_text_relocs,
-        flags: 0x8000_0400,
-        reserved1: 0, reserved2: 0, reserved3: 0,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&Section64 {
+            sectname: name16("__text"),
+            segname: name16("__TEXT"),
+            addr: 0,
+            size: text_size as u64,
+            offset: text_off as u32,
+            align: 2,
+            reloff: if n_text_relocs > 0 {
+                text_reloc_off as u32
+            } else {
+                0
+            },
+            nreloc: n_text_relocs,
+            flags: 0x8000_0400,
+            reserved1: 0,
+            reserved2: 0,
+            reserved3: 0,
+        })
+    });
 
     // Section: __TEXT,__cstring (optional)
     // addr=0 so that symbol n_value == section-relative offset directly.
     // parse_symbols in the linker computes: offset = sym.address() - sec.address() = n_value - 0 = n_value.
     if has_cstring {
-        out.extend_from_slice(unsafe { as_bytes(&Section64 {
-            sectname: name16("__cstring"), segname: name16("__TEXT"),
-            addr: 0, size: cstring_size as u64,
-            offset: cstring_off as u32, align: 0,
-            reloff: if n_cstring_relocs > 0 { cstring_reloc_off as u32 } else { 0 },
-            nreloc: n_cstring_relocs,
-            flags: S_CSTRING_LITERALS,
-            reserved1: 0, reserved2: 0, reserved3: 0,
-        }) });
+        out.extend_from_slice(unsafe {
+            as_bytes(&Section64 {
+                sectname: name16("__cstring"),
+                segname: name16("__TEXT"),
+                addr: 0,
+                size: cstring_size as u64,
+                offset: cstring_off as u32,
+                align: 0,
+                reloff: if n_cstring_relocs > 0 {
+                    cstring_reloc_off as u32
+                } else {
+                    0
+                },
+                nreloc: n_cstring_relocs,
+                flags: S_CSTRING_LITERALS,
+                reserved1: 0,
+                reserved2: 0,
+                reserved3: 0,
+            })
+        });
     }
 
     // Section: __DATA,__bss (optional, S_ZEROFILL, no file content)
@@ -856,22 +1102,35 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
         // directly.  parse_symbols in the linker computes:
         //   offset = sym.address() - sec.address() = n_value - 0 = n_value
         // which gives the correct section-relative byte offset for each BSS symbol.
-        out.extend_from_slice(unsafe { as_bytes(&Section64 {
-            sectname: name16("__bss"), segname: name16("__DATA"),
-            addr: 0, size: bss_size as u64,
-            offset: 0, align: 3,
-            reloff: 0, nreloc: 0,
-            flags: S_ZEROFILL,
-            reserved1: 0, reserved2: 0, reserved3: 0,
-        }) });
+        out.extend_from_slice(unsafe {
+            as_bytes(&Section64 {
+                sectname: name16("__bss"),
+                segname: name16("__DATA"),
+                addr: 0,
+                size: bss_size as u64,
+                offset: 0,
+                align: 3,
+                reloff: 0,
+                nreloc: 0,
+                flags: S_ZEROFILL,
+                reserved1: 0,
+                reserved2: 0,
+                reserved3: 0,
+            })
+        });
     }
 
     // LC_SYMTAB
-    out.extend_from_slice(unsafe { as_bytes(&SymtabCommand {
-        cmd: LC_SYMTAB, cmdsize: 24,
-        symoff: symtab_off as u32, nsyms,
-        stroff: strtab_off as u32, strsize: strtab_size,
-    }) });
+    out.extend_from_slice(unsafe {
+        as_bytes(&SymtabCommand {
+            cmd: LC_SYMTAB,
+            cmdsize: 24,
+            symoff: symtab_off as u32,
+            nsyms,
+            stroff: strtab_off as u32,
+            strsize: strtab_size,
+        })
+    });
 
     debug_assert_eq!(out.len(), header_total, "load command size mismatch");
 
@@ -897,13 +1156,15 @@ pub fn emit_object(input: &RelocatableInput) -> Vec<u8> {
     // nlist64 symbol table.
     out.resize(symtab_off, 0);
     for (i, se) in sym_entries.iter().enumerate() {
-        out.extend_from_slice(unsafe { as_bytes(&Nlist64 {
-            n_strx:  sym_strx[i],
-            n_type:  se.n_type,
-            n_sect:  se.n_sect,
-            n_desc:  0,
-            n_value: se.n_value,
-        }) });
+        out.extend_from_slice(unsafe {
+            as_bytes(&Nlist64 {
+                n_strx: sym_strx[i],
+                n_type: se.n_type,
+                n_sect: se.n_sect,
+                n_desc: 0,
+                n_value: se.n_value,
+            })
+        });
     }
 
     // String table.
@@ -947,7 +1208,11 @@ mod tests {
         let msg = b"Hello, world!\n\0";
         let input = EmitInput {
             code: &[0xC0, 0x03, 0x5F, 0xD6],
-            data: vec![StaticData { name: "__msg".to_string(), bytes: msg.to_vec(), writable: false }],
+            data: vec![StaticData {
+                name: "__msg".to_string(),
+                bytes: msg.to_vec(),
+                writable: false,
+            }],
             relocs: vec![],
             static_relocs: vec![],
             fn_offsets: std::collections::HashMap::new(),
@@ -955,7 +1220,10 @@ mod tests {
         };
         let b = emit_macho(&input);
         assert_eq!(&b[0..4], &[0xCF, 0xFA, 0xED, 0xFE]);
-        assert!(b.windows(msg.len()).any(|w| w == msg.as_ref()), "cstring not found");
+        assert!(
+            b.windows(msg.len()).any(|w| w == msg.as_ref()),
+            "cstring not found"
+        );
     }
 
     #[test]
@@ -972,40 +1240,56 @@ mod tests {
         let mut off = 32usize;
         let mut found: Option<u64> = None;
         while off + 8 <= b.len() {
-            let cmd     = u32::from_le_bytes(b[off..off+4].try_into().unwrap());
-            let cmdsize = u32::from_le_bytes(b[off+4..off+8].try_into().unwrap()) as usize;
+            let cmd = u32::from_le_bytes(b[off..off + 4].try_into().unwrap());
+            let cmdsize = u32::from_le_bytes(b[off + 4..off + 8].try_into().unwrap()) as usize;
             if cmd == LC_MAIN {
                 // EntryPointCommand: cmd(4)+cmdsize(4)+entryoff(8)
-                found = Some(u64::from_le_bytes(b[off+8..off+16].try_into().unwrap()));
+                found = Some(u64::from_le_bytes(b[off + 8..off + 16].try_into().unwrap()));
                 break;
             }
-            if cmdsize == 0 { break; }
+            if cmdsize == 0 {
+                break;
+            }
             off += cmdsize;
         }
         let entryoff = found.expect("LC_MAIN not found");
         // code starts at code_file_offset = align_up(32+664, 16) = 704
-        assert!(entryoff >= 704, "entryoff {entryoff} < code_file_offset 704");
+        assert!(
+            entryoff >= 704,
+            "entryoff {entryoff} < code_file_offset 704"
+        );
     }
 
     #[test]
     fn adrp_add_patching() {
         let adrp_placeholder = encode_adrp(0, 0);
-        let add_placeholder  = encode_add_imm(0, 0, 0);
+        let add_placeholder = encode_add_imm(0, 0, 0);
         let mut code = vec![0u8; 8];
         code[0..4].copy_from_slice(&adrp_placeholder.to_le_bytes());
         code[4..8].copy_from_slice(&add_placeholder.to_le_bytes());
         let msg = b"test\0";
         let input = EmitInput {
             code: &code,
-            data: vec![StaticData { name: "__test".to_string(), bytes: msg.to_vec(), writable: false }],
-            relocs: vec![DataReloc { adrp_offset: 0, add_offset: 4, symbol: "__test".to_string() }],
+            data: vec![StaticData {
+                name: "__test".to_string(),
+                bytes: msg.to_vec(),
+                writable: false,
+            }],
+            relocs: vec![DataReloc {
+                adrp_offset: 0,
+                add_offset: 4,
+                symbol: "__test".to_string(),
+            }],
             static_relocs: vec![],
             fn_offsets: std::collections::HashMap::new(),
             entry_offset: 0,
         };
         let b = emit_macho(&input);
         assert_eq!(&b[0..4], &[0xCF, 0xFA, 0xED, 0xFE]);
-        assert!(b.windows(msg.len()).any(|w| w == msg.as_ref()), "cstring not found");
+        assert!(
+            b.windows(msg.len()).any(|w| w == msg.as_ref()),
+            "cstring not found"
+        );
     }
 
     #[test]
@@ -1034,7 +1318,11 @@ mod tests {
                 bytes: b"Hello, world!\n".to_vec(),
                 writable: false,
             }],
-            relocs: vec![DataReloc { adrp_offset: 0, add_offset: 4, symbol: "__msg".to_string() }],
+            relocs: vec![DataReloc {
+                adrp_offset: 0,
+                add_offset: 4,
+                symbol: "__msg".to_string(),
+            }],
             static_relocs: vec![],
             fn_offsets: std::collections::HashMap::new(),
             entry_offset: 0,
@@ -1053,8 +1341,11 @@ mod tests {
             .unwrap_or_else(|e| panic!("exec failed: {e}"));
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(out.stdout, b"Hello, world!\n",
-            "stdout={:?} status={:?} stderr={:?}", out.stdout, out.status, out.stderr);
+        assert_eq!(
+            out.stdout, b"Hello, world!\n",
+            "stdout={:?} status={:?} stderr={:?}",
+            out.stdout, out.status, out.stderr
+        );
         assert_eq!(out.status.code(), Some(0));
     }
 
@@ -1069,7 +1360,14 @@ mod tests {
         code.extend_from_slice(&0xD2800030u32.to_le_bytes()); // MOVZ x16, #1
         code.extend_from_slice(&0xD4001001u32.to_le_bytes()); // SVC #0x80
 
-        let binary = emit_macho(&EmitInput { code: &code, data: vec![], relocs: vec![], static_relocs: vec![], fn_offsets: std::collections::HashMap::new(), entry_offset: 0 });
+        let binary = emit_macho(&EmitInput {
+            code: &code,
+            data: vec![],
+            relocs: vec![],
+            static_relocs: vec![],
+            fn_offsets: std::collections::HashMap::new(),
+            entry_offset: 0,
+        });
 
         let path = std::env::temp_dir().join("pure_rs_exit42");
         std::fs::write(&path, &binary).unwrap();

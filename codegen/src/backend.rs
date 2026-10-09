@@ -7,25 +7,34 @@ use rustc_data_structures::fx::FxIndexMap;
 use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
 use rustc_middle::ty::TyCtxt;
-use rustc_session::Session;
 use rustc_session::config::{OutFileName, OutputFilenames, OutputType};
+use rustc_session::Session;
 
 use crate::codegen::TridentOutput;
 
 fn find_macho_linker() -> Option<std::path::PathBuf> {
     if let Ok(s) = std::env::var("MACHO_LINKER") {
         let p = std::path::PathBuf::from(s);
-        if p.exists() { return Some(p); }
+        if p.exists() {
+            return Some(p);
+        }
     }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace = std::path::Path::new(manifest_dir).parent()?;
     for profile in &["debug", "release"] {
         // Workspace shared target (most common — macho-linker is a workspace member).
         let p = workspace.join("target").join(profile).join("macho-linker");
-        if p.exists() { return Some(p); }
+        if p.exists() {
+            return Some(p);
+        }
         // Crate-local target (when built standalone).
-        let p = workspace.join("macho-linker/target").join(profile).join("macho-linker");
-        if p.exists() { return Some(p); }
+        let p = workspace
+            .join("macho-linker/target")
+            .join(profile)
+            .join("macho-linker");
+        if p.exists() {
+            return Some(p);
+        }
     }
     None
 }
@@ -36,7 +45,8 @@ fn invoke_macho_linker(obj: &std::path::Path, exe: &std::path::Path) -> bool {
         None => return false,
     };
     match std::process::Command::new(&ml)
-        .arg("-o").arg(exe)
+        .arg("-o")
+        .arg(exe)
         .arg(obj)
         .arg("-lSystem")
         .status()
@@ -56,9 +66,13 @@ fn invoke_macho_linker(obj: &std::path::Path, exe: &std::path::Path) -> bool {
 pub struct TridentBackend;
 
 impl CodegenBackend for TridentBackend {
-    fn locale_resource(&self) -> &'static str { "" }
+    fn locale_resource(&self) -> &'static str {
+        ""
+    }
 
-    fn name(&self) -> &'static str { "trident" }
+    fn name(&self) -> &'static str {
+        "trident"
+    }
 
     fn codegen_crate<'tcx>(&self, tcx: TyCtxt<'tcx>) -> Box<dyn Any> {
         Box::new(crate::codegen::codegen_crate(tcx))
@@ -97,8 +111,7 @@ impl CodegenBackend for TridentBackend {
 
         // Write to tmp path if we haven't written via the wants_obj branch.
         if using_tmp_obj {
-            std::fs::write(&obj_path, &out.object)
-                .unwrap_or_else(|e| panic!("write tmp obj: {e}"));
+            std::fs::write(&obj_path, &out.object).unwrap_or_else(|e| panic!("write tmp obj: {e}"));
         }
 
         if wants_exe || !wants_obj {

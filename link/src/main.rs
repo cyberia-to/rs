@@ -1,4 +1,4 @@
-use link::{EmitInput, StaticData, DataReloc, emit_macho};
+use link::{emit_macho, DataReloc, EmitInput, StaticData};
 use std::os::unix::fs::PermissionsExt;
 
 fn main() {
@@ -15,8 +15,16 @@ fn main() {
 
     let input = EmitInput {
         code: &code,
-        data: vec![StaticData { name: "__msg".into(), bytes: b"Hello, world!\n".to_vec(), writable: false }],
-        relocs: vec![DataReloc { adrp_offset: 0, add_offset: 4, symbol: "__msg".into() }],
+        data: vec![StaticData {
+            name: "__msg".into(),
+            bytes: b"Hello, world!\n".to_vec(),
+            writable: false,
+        }],
+        relocs: vec![DataReloc {
+            adrp_offset: 0,
+            add_offset: 4,
+            symbol: "__msg".into(),
+        }],
         static_relocs: vec![],
         fn_offsets: std::collections::HashMap::new(),
         entry_offset: 0,

@@ -41,18 +41,24 @@ fn find_macho_linker() -> Option<std::path::PathBuf> {
     None
 }
 
-fn invoke_macho_linker(obj: &std::path::Path, exe: &std::path::Path) -> bool {
+fn invoke_macho_linker(
+    obj: &std::path::Path,
+    exe: &std::path::Path,
+    rlibs: &[std::path::PathBuf],
+) -> bool {
     let ml = match find_macho_linker() {
         Some(p) => p,
         None => return false,
     };
-    match std::process::Command::new(&ml)
-        .arg("-o")
-        .arg(exe)
-        .arg(obj)
-        .arg("-lSystem")
-        .status()
-    {
+    let mut cmd = std::process::Command::new(&ml);
+    cmd.arg("-o").arg(exe).arg(obj).arg("-lSystem");
+    // Link the whole dependency closure (core, alloc, std, compiler_builtins, …)
+    // from their sysroot rlibs. macho-linker reads archives whole-archive; rlib
+    // symbol sets are disjoint, so link order only matters for rare duplicates.
+    for rlib in rlibs {
+        cmd.arg(rlib);
+    }
+    match cmd.status() {
         Ok(s) if s.success() => true,
         Ok(s) => {
             eprintln!("warning: macho-linker exited with {:?}", s.code());
@@ -128,7 +134,19 @@ impl CodegenBackend for TridentBackend {
         if wants_exe {
             let exe_out = outputs.path(OutputType::Exe);
             if let OutFileName::Real(ref p) = exe_out {
-                let linked = invoke_macho_linker(&obj_path, p);
+                // Dependency-closure rlibs (sysroot std/core/alloc/…) to link.
+                let crate_info = &out.crate_info;
+                let mut rlibs: Vec<std::path::PathBuf> = Vec::new();
+                for &cnum in &crate_info.used_crates {
+                    let src = match crate_info.used_crate_source.get(&cnum) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    if let Some((ref rlib, _)) = src.rlib {
+                        rlibs.push(rlib.clone());
+                    }
+                }
+                let linked = invoke_macho_linker(&obj_path, p, &rlibs);
                 if !linked && out.binary.is_empty() {
                     panic!(
                         "cannot produce {}: macho-linker unavailable and the monolithic \

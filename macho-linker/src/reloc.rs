@@ -14,7 +14,9 @@ pub fn apply_all(
         let obj = &objects[obj_idx];
         for sec_idx in 0..obj.sections.len() {
             let sec = &obj.sections[sec_idx];
-            if sec.relocs.is_empty() { continue; }
+            if sec.relocs.is_empty() {
+                continue;
+            }
 
             let merged_entry = layout.obj_sec_map.get(&(obj_idx, sec_idx)).copied();
             let (merged_idx, chunk_off) = match merged_entry {
@@ -33,8 +35,14 @@ pub fn apply_all(
                 if r.kind == RelocKind::Subtractor {
                     if i + 1 < relocs.len() && relocs[i + 1].kind == RelocKind::Unsigned {
                         apply_subtractor_pair(
-                            r, &relocs[i + 1], sec_vm, merged_idx, chunk_off,
-                            objects, layout, syms
+                            r,
+                            &relocs[i + 1],
+                            sec_vm,
+                            merged_idx,
+                            chunk_off,
+                            objects,
+                            layout,
+                            syms,
                         )?;
                         i += 2;
                         continue;
@@ -45,7 +53,16 @@ pub fn apply_all(
                     }
                 }
 
-                apply_one(r, sec_vm, merged_idx, chunk_off, objects, layout, syms)?;
+                apply_one(
+                    r,
+                    sec_vm,
+                    merged_idx,
+                    chunk_off,
+                    objects,
+                    layout,
+                    syms,
+                    &obj.source,
+                )?;
                 i += 1;
             }
         }
@@ -61,6 +78,7 @@ fn apply_one(
     objects: &[ObjData],
     layout: &mut Layout,
     syms: &SymbolTable,
+    obj_source: &str,
 ) -> Result<(), String> {
     let pc = sec_vm + r.offset;
     let byte_off = chunk_off + r.offset as usize;
@@ -85,11 +103,17 @@ fn apply_one(
             let insn = u32::from_le_bytes(data[byte_off..byte_off + 4].try_into().unwrap());
             let delta_bytes = target_addr as i64 - pc as i64;
             if delta_bytes % 4 != 0 {
-                return Err(format!("Branch26 target not 4-aligned: {delta_bytes}"));
+                return Err(format!(
+                    "Branch26 target not 4-aligned: {delta_bytes} (target={target_addr:#x} pc={pc:#x} sym={:?} obj={})",
+                    r.target,
+                    obj_source
+                ));
             }
             let delta = (delta_bytes / 4) as i32;
             if delta < -(1 << 25) || delta >= (1 << 25) {
-                return Err(format!("Branch26 out of range: delta={delta} pc={pc:#x} target={target_addr:#x}"));
+                return Err(format!(
+                    "Branch26 out of range: delta={delta} pc={pc:#x} target={target_addr:#x}"
+                ));
             }
             let patched = arm64::patch_branch26(insn, delta);
             data[byte_off..byte_off + 4].copy_from_slice(&patched.to_le_bytes());

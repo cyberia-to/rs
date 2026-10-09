@@ -11,14 +11,17 @@ mod layout;
 mod reloc;
 mod resolve;
 
-use std::path::PathBuf;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse_args(&raw) {
         Ok(a) => a,
-        Err(e) => { eprintln!("macho-linker: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("macho-linker: {e}");
+            std::process::exit(1);
+        }
     };
 
     if args.output.is_none() {
@@ -28,7 +31,10 @@ fn main() {
 
     match link(args) {
         Ok(()) => {}
-        Err(e) => { eprintln!("macho-linker: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("macho-linker: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -37,14 +43,14 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 struct Args {
-    inputs:     Vec<PathBuf>,
-    output:     Option<PathBuf>,
-    lib_paths:  Vec<PathBuf>,
-    libs:       Vec<String>,
+    inputs: Vec<PathBuf>,
+    output: Option<PathBuf>,
+    lib_paths: Vec<PathBuf>,
+    libs: Vec<String>,
     frameworks: Vec<String>,
-    entry:      String,
-    dylibs:     Vec<String>, // resolved dylib paths to link against
-    verbose:    bool,
+    entry: String,
+    dylibs: Vec<String>, // resolved dylib paths to link against
+    verbose: bool,
 }
 
 fn parse_args(raw: &[String]) -> Result<Args, String> {
@@ -58,18 +64,18 @@ fn parse_args(raw: &[String]) -> Result<Args, String> {
         .unwrap_or_default();
 
     let mut args = Args {
-        inputs:     Vec::new(),
-        output:     None,
-        lib_paths:  vec![
+        inputs: Vec::new(),
+        output: None,
+        lib_paths: vec![
             PathBuf::from("/usr/lib"),
             PathBuf::from("/usr/local/lib"),
             sdk_lib,
         ],
-        libs:       Vec::new(),
+        libs: Vec::new(),
         frameworks: Vec::new(),
-        entry:      "_main".to_string(),
-        dylibs:     Vec::new(),
-        verbose:    false,
+        entry: "_main".to_string(),
+        dylibs: Vec::new(),
+        verbose: false,
     };
 
     let mut i = 0;
@@ -110,9 +116,9 @@ fn parse_args(raw: &[String]) -> Result<Args, String> {
             "-syslibroot" | "-install_name" | "-final_output" => {
                 i += 1; // skip value
             }
-            "-dynamic" | "-static" | "-pie" | "-no_pie" | "-dead_strip"
-            | "-objc_abi_version" | "-bitcode_bundle" | "-ObjC"
-            | "-lto_library" | "-no_adhoc_codesign" | "-adhoc_codesign" => {
+            "-dynamic" | "-static" | "-pie" | "-no_pie" | "-dead_strip" | "-objc_abi_version"
+            | "-bitcode_bundle" | "-ObjC" | "-lto_library" | "-no_adhoc_codesign"
+            | "-adhoc_codesign" => {
                 // flags with no separate value
             }
             "-v" | "--version" | "-version_details" => {
@@ -142,8 +148,8 @@ fn parse_args(raw: &[String]) -> Result<Args, String> {
     // Resolve -l libraries.
     for lib in &args.libs {
         if let Some(path) = find_lib(lib, &args.lib_paths) {
-            let install_name = extract_install_name(&path)
-                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            let install_name =
+                extract_install_name(&path).unwrap_or_else(|| path.to_string_lossy().into_owned());
             args.dylibs.push(install_name);
         } else {
             eprintln!("warning: library not found: -l{lib}");
@@ -180,11 +186,15 @@ fn find_lib(name: &str, search: &[PathBuf]) -> Option<PathBuf> {
         // Try dylib first, then static (.a).
         for suffix in &[".dylib", ".tbd", ".a"] {
             let path = dir.join(format!("lib{name}{suffix}"));
-            if path.exists() { return Some(path); }
+            if path.exists() {
+                return Some(path);
+            }
         }
         // Also try bare name (some libs are e.g. libSystem.B.dylib).
         let path = dir.join(format!("lib{name}.B.dylib"));
-        if path.exists() { return Some(path); }
+        if path.exists() {
+            return Some(path);
+        }
     }
     None
 }
@@ -196,45 +206,102 @@ fn find_lib(name: &str, search: &[PathBuf]) -> Option<PathBuf> {
 fn link(args: Args) -> Result<(), String> {
     let output = args.output.as_ref().unwrap();
 
-    // ---- Step 1: Parse inputs ----
+    // ---- Step 1: Parse inputs, keeping archive boundaries ----
     let mut objects: Vec<input::ObjData> = Vec::new();
+    let mut archives: Vec<Vec<input::ObjData>> = Vec::new();
     for path in &args.inputs {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        match ext {
-            "o" => {
-                let mut obs = input::parse_file(path)?;
-                objects.append(&mut obs);
+        let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        if data.starts_with(b"!<arch>\n") {
+            archives.push(input::parse_bytes(&data, &path.to_string_lossy())?);
+        } else {
+            objects.push(input::parse_object(&data, &path.to_string_lossy())?);
+        }
+    }
+
+    if objects.is_empty() && archives.is_empty() {
+        return Err("no input objects".to_string());
+    }
+
+    // ---- Step 2: Demand-driven archive member inclusion ----
+    // Seed with symbols undefined in plain objects (plus the entry symbol).
+    // A member is pulled only if it defines a currently-undefined symbol;
+    // pulling it contributes its own undefined symbols to the pool. Loop to
+    // a fixpoint. This mirrors archive semantics of ld/ld64 and avoids
+    // dragging in (and failing on) unreferenced members.
+    let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut undefined: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for obj in &objects {
+        for sym in &obj.symbols {
+            if sym.is_defined {
+                defined.insert(sym.name.clone());
             }
-            "a" | "rlib" => {
-                let mut obs = input::parse_file(path)?;
-                objects.append(&mut obs);
+        }
+    }
+    for obj in &objects {
+        for sym in &obj.symbols {
+            if !sym.is_defined && !defined.contains(&sym.name) {
+                undefined.insert(sym.name.clone());
             }
-            _ => {
-                // Try as object anyway (e.g., rlib renamed, or no extension).
-                match input::parse_file(path) {
-                    Ok(mut obs) => objects.append(&mut obs),
-                    Err(e) => eprintln!("warning: skipping {}: {e}", path.display()),
+        }
+    }
+    undefined.insert(args.entry.clone());
+
+    let mut taken: Vec<Vec<bool>> = archives.iter().map(|m| vec![false; m.len()]).collect();
+    loop {
+        let mut progress = false;
+        for (ai, members) in archives.iter().enumerate() {
+            for (mi, member) in members.iter().enumerate() {
+                if taken[ai][mi] {
+                    continue;
                 }
+                let pulls: Vec<String> = member
+                    .symbols
+                    .iter()
+                    .filter(|s| s.is_defined && undefined.contains(&s.name))
+                    .map(|s| s.name.clone())
+                    .collect();
+                if pulls.is_empty() {
+                    continue;
+                }
+                taken[ai][mi] = true;
+                progress = true;
+                for name in pulls {
+                    undefined.remove(&name);
+                }
+                for sym in &member.symbols {
+                    if sym.is_defined {
+                        defined.insert(sym.name.clone());
+                    } else if !defined.contains(&sym.name) {
+                        undefined.insert(sym.name.clone());
+                    }
+                }
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+
+    for (ai, members) in archives.into_iter().enumerate() {
+        for (mi, member) in members.into_iter().enumerate() {
+            if taken[ai][mi] {
+                objects.push(member);
             }
         }
     }
 
-    if objects.is_empty() {
-        return Err("no input objects".to_string());
-    }
-
-    // ---- Step 2: Resolve symbols ----
+    // ---- Step 3: Resolve symbols ----
     let mut syms = resolve::resolve(&objects, &args.dylibs)?;
     let imports = syms.imports.clone();
     let n_imports = imports.len();
 
-    // ---- Step 3: Layout ----
+    // ---- Step 4: Layout ----
     let mut layout = layout::perform(&objects, &mut syms, n_imports);
 
-    // ---- Step 4: Apply relocations ----
+    // ---- Step 5: Apply relocations ----
     reloc::apply_all(&objects, &mut layout, &syms)?;
 
-    // ---- Step 5: Emit ----
+    // ---- Step 6: Emit ----
     let binary = emit::emit(&emit::EmitArgs {
         layout: &layout,
         syms: &syms,
@@ -244,14 +311,17 @@ fn link(args: Args) -> Result<(), String> {
     });
 
     // ---- Step 6: Write output ----
-    std::fs::write(output, &binary)
-        .map_err(|e| format!("write {}: {e}", output.display()))?;
+    std::fs::write(output, &binary).map_err(|e| format!("write {}: {e}", output.display()))?;
     let perms = std::fs::Permissions::from_mode(0o755);
     std::fs::set_permissions(output, perms)
         .map_err(|e| format!("chmod {}: {e}", output.display()))?;
 
     if args.verbose {
-        eprintln!("macho-linker: wrote {} ({} bytes)", output.display(), binary.len());
+        eprintln!(
+            "macho-linker: wrote {} ({} bytes)",
+            output.display(),
+            binary.len()
+        );
     }
 
     Ok(())

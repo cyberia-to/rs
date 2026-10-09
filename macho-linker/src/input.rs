@@ -1,21 +1,18 @@
 //! Parse Mach-O MH_OBJECT files and ar archives into `ObjData`.
 
-use object::{
-    Object, ObjectSection, ObjectSymbol, RelocationTarget,
-    SymbolKind, RelocationFlags,
-};
 use object::read::archive::ArchiveFile;
+use object::{Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, SymbolKind};
 
 /// Raw ARM64 Mach-O relocation types (from mach-o/arm64/reloc.h).
 mod arm64_reloc {
-    pub const UNSIGNED:           u8 = 0;
-    pub const SUBTRACTOR:         u8 = 1;
-    pub const BRANCH26:           u8 = 2;
-    pub const PAGE21:             u8 = 3;
-    pub const PAGEOFF12:          u8 = 4;
-    pub const GOT_LOAD_PAGE21:    u8 = 5;
+    pub const UNSIGNED: u8 = 0;
+    pub const SUBTRACTOR: u8 = 1;
+    pub const BRANCH26: u8 = 2;
+    pub const PAGE21: u8 = 3;
+    pub const PAGEOFF12: u8 = 4;
+    pub const GOT_LOAD_PAGE21: u8 = 5;
     pub const GOT_LOAD_PAGEOFF12: u8 = 6;
-    pub const POINTER_TO_GOT:     u8 = 7;
+    pub const POINTER_TO_GOT: u8 = 7;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -54,7 +51,7 @@ pub struct SecData {
     /// data.len(). For S_ZEROFILL sections the data is empty but virtual_size
     /// gives the actual zero-fill extent needed at runtime.
     pub virtual_size: usize,
-    pub align: u32,  // log2 alignment
+    pub align: u32, // log2 alignment
     pub flags: u32,
     pub relocs: Vec<Reloc>,
 }
@@ -80,8 +77,7 @@ pub struct ObjData {
 // ---------------------------------------------------------------------------
 
 pub fn parse_file(path: &std::path::Path) -> Result<Vec<ObjData>, String> {
-    let data = std::fs::read(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     parse_bytes(&data, &path.to_string_lossy())
 }
 
@@ -97,13 +93,14 @@ pub fn parse_bytes(data: &[u8], name: &str) -> Result<Vec<ObjData>, String> {
 // ---------------------------------------------------------------------------
 
 fn parse_archive(data: &[u8], archive_name: &str) -> Result<Vec<ObjData>, String> {
-    let archive = ArchiveFile::parse(data)
-        .map_err(|e| format!("parse archive {archive_name}: {e}"))?;
+    let archive =
+        ArchiveFile::parse(data).map_err(|e| format!("parse archive {archive_name}: {e}"))?;
     let mut out = Vec::new();
     for member in archive.members() {
         let member = member.map_err(|e| format!("archive member in {archive_name}: {e}"))?;
         let member_name = String::from_utf8_lossy(member.name()).into_owned();
-        let member_data = member.data(data)
+        let member_data = member
+            .data(data)
             .map_err(|e| format!("archive member data {member_name}: {e}"))?;
         if is_macho(member_data) {
             let label = format!("{archive_name}({member_name})");
@@ -117,7 +114,9 @@ fn parse_archive(data: &[u8], archive_name: &str) -> Result<Vec<ObjData>, String
 }
 
 fn is_macho(data: &[u8]) -> bool {
-    if data.len() < 4 { return false; }
+    if data.len() < 4 {
+        return false;
+    }
     let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
     magic == 0xFEED_FACF || magic == 0xCEFA_EDFE
 }
@@ -126,14 +125,17 @@ fn is_macho(data: &[u8]) -> bool {
 // Single object file parsing
 // ---------------------------------------------------------------------------
 
-fn parse_object(data: &[u8], name: &str) -> Result<ObjData, String> {
-    let file = object::File::parse(data)
-        .map_err(|e| format!("parse {name}: {e}"))?;
+pub fn parse_object(data: &[u8], name: &str) -> Result<ObjData, String> {
+    let file = object::File::parse(data).map_err(|e| format!("parse {name}: {e}"))?;
 
     let sections = parse_sections(&file, data)?;
-    let symbols  = parse_symbols(&file, &sections)?;
+    let symbols = parse_symbols(&file, &sections)?;
 
-    Ok(ObjData { source: name.to_string(), sections, symbols })
+    Ok(ObjData {
+        source: name.to_string(),
+        sections,
+        symbols,
+    })
 }
 
 fn seg_name_of(sec: &object::Section<'_, '_>) -> String {
@@ -144,10 +146,12 @@ fn parse_sections(file: &object::File<'_>, raw: &[u8]) -> Result<Vec<SecData>, S
     let mut out = Vec::new();
     for sec in file.sections() {
         let name = sec.name().unwrap_or("").to_string();
-        let seg  = seg_name_of(&sec);
+        let seg = seg_name_of(&sec);
 
         // Skip debug sections for now.
-        if seg == "__DWARF" { continue; }
+        if seg == "__DWARF" {
+            continue;
+        }
 
         let data = sec.data().unwrap_or(&[]).to_vec();
         // virtual_size is the extent the section occupies in memory.
@@ -155,13 +159,25 @@ fn parse_sections(file: &object::File<'_>, raw: &[u8]) -> Result<Vec<SecData>, S
         // the actual zero-fill size that must be reserved in the VM layout.
         let virtual_size = sec.size() as usize;
         let byte_align = sec.align() as usize;
-        let log2_align = if byte_align <= 1 { 0 } else { byte_align.trailing_zeros() };
+        let log2_align = if byte_align <= 1 {
+            0
+        } else {
+            byte_align.trailing_zeros()
+        };
 
         // Mach-O section flags from raw bytes.
         let flags = sec_flags(file, &sec);
 
         let relocs = parse_relocs(file, &sec, raw, &out, file.sections().count())?;
-        out.push(SecData { seg, name, data, virtual_size, align: log2_align, flags, relocs });
+        out.push(SecData {
+            seg,
+            name,
+            data,
+            virtual_size,
+            align: log2_align,
+            flags,
+            relocs,
+        });
     }
     Ok(out)
 }
@@ -169,7 +185,7 @@ fn parse_sections(file: &object::File<'_>, raw: &[u8]) -> Result<Vec<SecData>, S
 fn sec_flags(_file: &object::File<'_>, sec: &object::Section<'_, '_>) -> u32 {
     use object::SectionKind;
     match sec.kind() {
-        SectionKind::ReadOnlyString  => 0x02, // S_CSTRING_LITERALS
+        SectionKind::ReadOnlyString => 0x02,    // S_CSTRING_LITERALS
         SectionKind::UninitializedData => 0x01, // S_ZEROFILL
         _ => 0,
     }
@@ -187,21 +203,26 @@ fn parse_relocs(
 
     for (offset, reloc) in sec.relocations() {
         let (r_type, r_length) = match reloc.flags() {
-            RelocationFlags::MachO { r_type, r_length, .. } => (r_type, r_length),
+            RelocationFlags::MachO {
+                r_type, r_length, ..
+            } => (r_type, r_length),
             _ => continue,
         };
 
         let kind = match r_type {
-            arm64_reloc::UNSIGNED           => RelocKind::Unsigned,
-            arm64_reloc::SUBTRACTOR         => RelocKind::Subtractor,
-            arm64_reloc::BRANCH26           => RelocKind::Branch26,
-            arm64_reloc::PAGE21             => RelocKind::Page21,
-            arm64_reloc::PAGEOFF12          => RelocKind::PageOff12,
-            arm64_reloc::GOT_LOAD_PAGE21    => RelocKind::GotPage21,
+            arm64_reloc::UNSIGNED => RelocKind::Unsigned,
+            arm64_reloc::SUBTRACTOR => RelocKind::Subtractor,
+            arm64_reloc::BRANCH26 => RelocKind::Branch26,
+            arm64_reloc::PAGE21 => RelocKind::Page21,
+            arm64_reloc::PAGEOFF12 => RelocKind::PageOff12,
+            arm64_reloc::GOT_LOAD_PAGE21 => RelocKind::GotPage21,
             arm64_reloc::GOT_LOAD_PAGEOFF12 => RelocKind::GotPageOff12,
-            arm64_reloc::POINTER_TO_GOT     => RelocKind::PtrToGot,
+            arm64_reloc::POINTER_TO_GOT => RelocKind::PtrToGot,
             other => {
-                eprintln!("warning: unhandled ARM64 reloc type {} at {offset:#x}, skipping", other);
+                eprintln!(
+                    "warning: unhandled ARM64 reloc type {} at {offset:#x}, skipping",
+                    other
+                );
                 continue;
             }
         };
@@ -216,12 +237,14 @@ fn parse_relocs(
         // r_extern is implicit: Symbol target → extern, Section target → section-relative.
         let target = match reloc.target() {
             RelocationTarget::Symbol(idx) => {
-                let sym = file.symbol_by_index(idx)
+                let sym = file
+                    .symbol_by_index(idx)
                     .map_err(|e| format!("symbol {idx:?}: {e}"))?;
                 RelocTarget::Symbol(sym.name().unwrap_or("").to_string())
             }
             RelocationTarget::Section(idx) => {
-                let s = file.section_by_index(idx)
+                let s = file
+                    .section_by_index(idx)
                     .map_err(|e| format!("section {idx:?}: {e}"))?;
                 RelocTarget::SectionRel {
                     seg: seg_name_of(&s),
@@ -234,7 +257,13 @@ fn parse_relocs(
         // Read the implicit addend from the instruction/data bytes.
         let addend: i64 = read_addend(sec_raw, offset as usize, kind, size_bits);
 
-        out.push(Reloc { offset, target, kind, addend, size_bits });
+        out.push(Reloc {
+            offset,
+            target,
+            kind,
+            addend,
+            size_bits,
+        });
     }
     Ok(out)
 }
@@ -262,14 +291,18 @@ fn parse_symbols(file: &object::File<'_>, sections: &[SecData]) -> Result<Vec<Sy
     let mut out = Vec::new();
     for sym in file.symbols() {
         let name = sym.name().unwrap_or("").to_string();
-        if name.is_empty() { continue; }
+        if name.is_empty() {
+            continue;
+        }
 
         let kind = sym.kind();
         // Keep Unknown: it's Mach-O's N_UNDF — undefined externals (_write, _exit etc.).
-        if matches!(kind, SymbolKind::Section | SymbolKind::File) { continue; }
+        if matches!(kind, SymbolKind::Section | SymbolKind::File) {
+            continue;
+        }
 
         let is_defined = sym.is_definition();
-        let is_global  = matches!(
+        let is_global = matches!(
             sym.scope(),
             object::SymbolScope::Linkage | object::SymbolScope::Dynamic
         );
@@ -279,7 +312,8 @@ fn parse_symbols(file: &object::File<'_>, sections: &[SecData]) -> Result<Vec<Sy
                 object::SymbolSection::Section(sec_idx) => {
                     let idx = find_section_idx(file, sec_idx, sections);
                     // sym.address() is absolute in the .o layout; make it section-relative.
-                    let sec_base = file.section_by_index(sec_idx)
+                    let sec_base = file
+                        .section_by_index(sec_idx)
                         .map(|s| s.address())
                         .unwrap_or(0);
                     (idx, sym.address().saturating_sub(sec_base))
@@ -290,7 +324,13 @@ fn parse_symbols(file: &object::File<'_>, sections: &[SecData]) -> Result<Vec<Sy
             (None, 0)
         };
 
-        out.push(SymData { name, is_defined, is_global, section_idx, offset });
+        out.push(SymData {
+            name,
+            is_defined,
+            is_global,
+            section_idx,
+            offset,
+        });
     }
     Ok(out)
 }

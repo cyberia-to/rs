@@ -45,18 +45,27 @@ pub fn resolve(
     // Pass 1: collect all defined symbols (global and local).
     for (obj_idx, obj) in objects.iter().enumerate() {
         for sym in &obj.symbols {
-            if !sym.is_defined { continue; }
+            if !sym.is_defined {
+                continue;
+            }
             let sec_idx = match sym.section_idx {
                 Some(i) => i,
                 None => continue, // absolute symbol; skip for now
             };
             let entry = GlobalSym {
                 addr: 0, // filled in by layout
-                kind: SymKind::Defined { obj_idx, sec_idx, offset: sym.offset },
+                kind: SymKind::Defined {
+                    obj_idx,
+                    sec_idx,
+                    offset: sym.offset,
+                },
             };
             if let Some(prev) = table.insert(sym.name.clone(), entry) {
                 // Duplicate definition: keep the first (first wins).
-                if let SymKind::Defined { obj_idx: prev_obj, .. } = prev.kind {
+                if let SymKind::Defined {
+                    obj_idx: prev_obj, ..
+                } = prev.kind
+                {
                     // Only warn for global symbols; local helpers like __trident_memcpy
                     // appear in every object and should be deduplicated silently.
                     if sym.is_global {
@@ -76,8 +85,12 @@ pub fn resolve(
     let mut seen_undef: std::collections::HashSet<String> = std::collections::HashSet::new();
     for obj in objects {
         for sym in &obj.symbols {
-            if sym.is_defined { continue; }
-            if table.contains_key(&sym.name) { continue; }
+            if sym.is_defined {
+                continue;
+            }
+            if table.contains_key(&sym.name) {
+                continue;
+            }
             if seen_undef.insert(sym.name.clone()) {
                 undefined.push(sym.name.clone());
             }
@@ -92,11 +105,21 @@ pub fn resolve(
         let got_idx = imports.len();
         let stub_idx = imports.len();
         imports.push(sym_name.clone());
-        table.insert(sym_name.clone(), GlobalSym {
-            addr: 0, // stub address assigned during layout
-            kind: SymKind::DylibImport { dylib_ordinal: 1, got_idx, stub_idx },
-        });
+        table.insert(
+            sym_name.clone(),
+            GlobalSym {
+                addr: 0, // stub address assigned during layout
+                kind: SymKind::DylibImport {
+                    dylib_ordinal: 1,
+                    got_idx,
+                    stub_idx,
+                },
+            },
+        );
     }
 
-    Ok(SymbolTable { syms: table, imports })
+    Ok(SymbolTable {
+        syms: table,
+        imports,
+    })
 }

@@ -52,7 +52,7 @@ fn make_tls_get_ops() -> Vec<LIROp> {
         LIROp::LabelDef(Label::new("__tls_init")),
         LIROp::Move(Reg(0), saved_kp),
         LIROp::LoadImm(Reg(1), 0),
-        LIROp::Call("_pthread_key_create".to_string()),
+        LIROp::Call("pthread_key_create".to_string()),
         LIROp::Load {
             dst: key,
             base: saved_kp,
@@ -62,7 +62,7 @@ fn make_tls_get_ops() -> Vec<LIROp> {
         // ptr = pthread_getspecific(key)
         LIROp::LabelDef(Label::new("__tls_have_key")),
         LIROp::Move(Reg(0), key),
-        LIROp::Call("_pthread_getspecific".to_string()),
+        LIROp::Call("pthread_getspecific".to_string()),
         LIROp::Move(new_ptr, Reg(0)),
         LIROp::Eq(cond, new_ptr, zero),
         LIROp::Branch {
@@ -73,7 +73,7 @@ fn make_tls_get_ops() -> Vec<LIROp> {
         // malloc(size) + zero + pthread_setspecific(key, ptr)
         LIROp::LabelDef(Label::new("__tls_alloc")),
         LIROp::Move(Reg(0), saved_sz),
-        LIROp::Call("_malloc".to_string()),
+        LIROp::Call("malloc".to_string()),
         LIROp::Move(new_ptr, Reg(0)),
         LIROp::Move(Reg(0), new_ptr),
         LIROp::Move(Reg(1), zero),
@@ -88,13 +88,53 @@ fn make_tls_get_ops() -> Vec<LIROp> {
         },
         LIROp::Move(Reg(0), key),
         LIROp::Move(Reg(1), new_ptr),
-        LIROp::Call("_pthread_setspecific".to_string()),
+        LIROp::Call("pthread_setspecific".to_string()),
         LIROp::Jump(Label::new("__tls_done")),
         LIROp::LabelDef(Label::new("__tls_done")),
         LIROp::Move(Reg(0), new_ptr),
         LIROp::Return,
         LIROp::FnEnd,
     ]
+}
+
+/// Allocator shim stubs. rustc normally synthesizes the `___rustc` crate that
+/// defines `__rust_alloc`/`__rust_dealloc`/`__rust_realloc`/`__rust_alloc_zeroed`
+/// (names mangled as internal symbols) and forwards to the real allocator. This
+/// backend skips that codegen, so emit equivalent stubs here, forwarding to
+/// libSystem's malloc/free/realloc/calloc — the same implementation std's
+/// default `System` allocator uses.
+fn make_alloc_shim_ops(tcx: rustc_middle::ty::TyCtxt<'_>) -> Vec<LIROp> {
+    use rustc_ast::expand::allocator::{global_fn_name, SpecialAllocatorMethod, ALLOCATOR_METHODS};
+    let mut ops = Vec::new();
+    for method in ALLOCATOR_METHODS {
+        let sym = rustc_symbol_mangling::mangle_internal_symbol(tcx, &global_fn_name(method.name));
+        ops.push(LIROp::FnStart(sym));
+        match method.special {
+            // __rust_alloc(size, _align) -> malloc(size)
+            Some(SpecialAllocatorMethod::Alloc) => {
+                ops.push(LIROp::Call("malloc".to_string()));
+            }
+            // __rust_dealloc(ptr, _size, _align) -> free(ptr)
+            Some(SpecialAllocatorMethod::Dealloc) => {
+                ops.push(LIROp::Call("free".to_string()));
+            }
+            // __rust_realloc(ptr, _size, _align, new_size) -> realloc(ptr, new_size)
+            Some(SpecialAllocatorMethod::Realloc) => {
+                ops.push(LIROp::Move(Reg(1), Reg(3)));
+                ops.push(LIROp::Call("realloc".to_string()));
+            }
+            // __rust_alloc_zeroed(size, _align) -> calloc(1, size)
+            Some(SpecialAllocatorMethod::AllocZeroed) => {
+                ops.push(LIROp::Move(Reg(1), Reg(0)));
+                ops.push(LIROp::LoadImm(Reg(0), 1));
+                ops.push(LIROp::Call("calloc".to_string()));
+            }
+            None => {}
+        }
+        ops.push(LIROp::Return);
+        ops.push(LIROp::FnEnd);
+    }
+    ops
 }
 
 /// Everything produced by per-crate codegen, passed to join_codegen.
@@ -191,18 +231,36 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
 
     let mut all_tls_vars: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
-    for instance in &fn_items {
-        let body = tcx.instance_mir(instance.def);
-        let mut lowerer = MirToLir::new(tcx, *instance);
-        match lowerer.lower(body, *instance) {
+    // Fixpoint worklist: lowering instances can discover cross-crate-inlinable
+    // callees that only this crate may define (instantiating-crate symbol suffix).
+    let mut seen: std::collections::HashSet<String> = fn_items
+        .iter()
+        .map(|i| tcx.symbol_name(*i).name.to_string())
+        .collect();
+    let mut queue: std::collections::VecDeque<ty::Instance<'_>> =
+        fn_items.iter().copied().collect();
+    while let Some(instance) = queue.pop_front() {
+        // Intrinsics with Rust implementations have no shim; read their MIR directly.
+        let body = match instance.def {
+            ty::InstanceKind::Intrinsic(def_id) => tcx.optimized_mir(def_id),
+            _ => tcx.instance_mir(instance.def),
+        };
+        let mut lowerer = MirToLir::new(tcx, instance);
+        match lowerer.lower(body, instance) {
             Ok(ops) => {
                 all_ops.extend(ops);
                 all_statics.extend(lowerer.take_statics());
                 all_static_relocs.extend(lowerer.take_static_relocs());
                 all_tls_vars.extend(lowerer.take_tls_vars());
+                for extra in lowerer.take_extra_instances() {
+                    let name = tcx.symbol_name(extra).name.to_string();
+                    if seen.insert(name) {
+                        queue.push_back(extra);
+                    }
+                }
             }
             Err(e) => {
-                let fn_name = tcx.symbol_name(*instance).name.to_string();
+                let fn_name = tcx.symbol_name(instance).name.to_string();
                 tcx.sess
                     .dcx()
                     .warn(format!("mir2lir failed for {fn_name}: {e}"));
@@ -222,6 +280,38 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
             });
         }
         all_ops.extend(make_tls_get_ops());
+    }
+
+    // Allocator shim: rustc synthesizes a `___rustc` crate defining `__rust_*` and
+    // forwarding to the real allocator. Our backend never runs rustc's allocator
+    // codegen, so emit the forwarding stubs ourselves.
+    // Default kind (std's System allocator) forwards to malloc/free/realloc/calloc
+    // in libSystem — matching System's semantics; a user `#[global_allocator]`
+    // (kind Global) is not yet supported and would need `__rg_*` forwarding.
+    if let Some(rustc_ast::expand::allocator::AllocatorKind::Default) = tcx.allocator_kind(()) {
+        all_ops.extend(make_alloc_shim_ops(tcx));
+        // The no-alloc-shim guard static: alloc asserts this symbol exists
+        // (defined by rustc's synthesized allocator shim; we replace it).
+        all_statics.push(StaticData {
+            name: rustc_symbol_mangling::mangle_internal_symbol(
+                tcx,
+                rustc_ast::expand::allocator::NO_ALLOC_SHIM_IS_UNSTABLE,
+            ),
+            bytes: vec![0u8; 1],
+            writable: false,
+        });
+        // `__rust_alloc_error_handler_should_panic`: a FUNCTION returning the
+        // OOM-strategy flag (std calls it; no rlib defines it — the shim does).
+        all_ops.push(LIROp::FnStart(rustc_symbol_mangling::mangle_internal_symbol(
+            tcx,
+            rustc_session::config::OomStrategy::SYMBOL,
+        )));
+        all_ops.push(LIROp::LoadImm(
+            Reg(0),
+            tcx.sess.opts.unstable_opts.oom.should_panic() as u64,
+        ));
+        all_ops.push(LIROp::Return);
+        all_ops.push(LIROp::FnEnd);
     }
 
     let mut backend = Arm64Backend::new();
@@ -301,7 +391,7 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         .collect();
 
     // Convert StaticReloc → StaticCodeReloc for the linker.
-    let link_static_relocs: Vec<StaticCodeReloc> = all_static_relocs
+    let mut link_static_relocs: Vec<StaticCodeReloc> = all_static_relocs
         .iter()
         .map(|r| StaticCodeReloc {
             static_name: r.static_name.clone(),
@@ -310,32 +400,43 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         })
         .collect();
 
+    // Darwin object symbols carry a leading underscore (LLVM convention):
+    // `write` → `_write`, `_RNv...` → `__RNv...`. Prefix every symbol that
+    // goes into the object/binary so our objects interoperate with LLVM-built
+    // rlibs (sysroot std/core/alloc). Internal names (__trident_*, __carg_*,
+    // vtables) are private to our objects; prefixing them is harmless.
+    let macho_name = |name: &str| format!("_{name}");
+    for r in &mut link_static_relocs {
+        r.static_name = macho_name(&r.static_name);
+        r.fn_symbol = macho_name(&r.fn_symbol);
+    }
+
     // fn_offsets map for vtable patching in emit_macho.
     let mut fn_offsets_map: std::collections::HashMap<String, usize> = backend
         .fn_offsets()
         .iter()
-        .map(|(k, &v)| (k.clone(), v))
+        .map(|(k, &v)| (macho_name(k), v))
         .collect();
-    fn_offsets_map.insert("__trident_memcpy".to_string(), memcpy_stub_off);
-    fn_offsets_map.insert("__trident_memset".to_string(), memset_stub_off);
+    fn_offsets_map.insert(macho_name("__trident_memcpy"), memcpy_stub_off);
+    fn_offsets_map.insert(macho_name("__trident_memset"), memset_stub_off);
 
     // Build the relocatable object from the unpatched code (BL slots still 0x94000000).
     let mut fn_syms: Vec<FnSymbol> = backend
         .fn_offsets()
         .iter()
         .map(|(name, &offset)| FnSymbol {
-            name: name.clone(),
+            name: macho_name(name),
             offset,
             is_global: true,
         })
         .collect();
     fn_syms.push(FnSymbol {
-        name: "__trident_memcpy".to_string(),
+        name: macho_name("__trident_memcpy"),
         offset: memcpy_stub_off,
         is_global: false,
     });
     fn_syms.push(FnSymbol {
-        name: "__trident_memset".to_string(),
+        name: macho_name("__trident_memset"),
         offset: memset_stub_off,
         is_global: false,
     });
@@ -345,7 +446,7 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         .iter()
         .map(|r| CallReloc2 {
             offset: r.offset,
-            symbol: r.symbol.clone(),
+            symbol: macho_name(&r.symbol),
         })
         .collect();
 
@@ -353,7 +454,7 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         .iter()
         .filter(|d| !d.writable)
         .map(|d| LinkData {
-            name: d.name.clone(),
+            name: macho_name(&d.name),
             bytes: d.bytes.clone(),
             writable: false,
         })
@@ -362,7 +463,7 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         .iter()
         .filter(|d| d.writable)
         .map(|d| LinkData {
-            name: d.name.clone(),
+            name: macho_name(&d.name),
             bytes: d.bytes.clone(),
             writable: true,
         })
@@ -378,7 +479,7 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
             .map(|r| DataReloc {
                 adrp_offset: r.adrp_offset,
                 add_offset: r.add_offset,
-                symbol: r.symbol.clone(),
+                symbol: macho_name(&r.symbol),
             })
             .collect(),
         fn_syms,
@@ -388,8 +489,22 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
 
     let input = EmitInput {
         code: &code,
-        data: link_data,
-        relocs: link_relocs,
+        data: link_data
+            .iter()
+            .map(|d| link::StaticData {
+                name: macho_name(&d.name),
+                bytes: d.bytes.clone(),
+                writable: d.writable,
+            })
+            .collect(),
+        relocs: link_relocs
+            .iter()
+            .map(|r| DataReloc {
+                adrp_offset: r.adrp_offset,
+                add_offset: r.add_offset,
+                symbol: macho_name(&r.symbol),
+            })
+            .collect(),
         static_relocs: link_static_relocs,
         fn_offsets: fn_offsets_map,
         entry_offset: 0,

@@ -44,6 +44,11 @@ pub struct MirToLir<'tcx> {
     static_relocs: Vec<StaticReloc>,
     tls_vars: HashMap<String, u64>, // storage_sym → byte size
     agg_counter: u32,
+    /// Cross-crate-inlinable callees (e.g. `core::intrinsics::compare_bytes`)
+    /// whose symbol carries an instantiating-crate suffix: no rlib defines them,
+    /// so the caller's crate must emit the body. Collected here, lowered by
+    /// codegen_crate in a fixpoint worklist.
+    extra_instances: Vec<Instance<'tcx>>,
 }
 
 impl<'tcx> MirToLir<'tcx> {
@@ -59,6 +64,7 @@ impl<'tcx> MirToLir<'tcx> {
             static_relocs: Vec::new(),
             tls_vars: HashMap::new(),
             agg_counter: 0,
+            extra_instances: Vec::new(),
         }
     }
 
@@ -70,6 +76,9 @@ impl<'tcx> MirToLir<'tcx> {
     }
     pub fn take_tls_vars(&mut self) -> HashMap<String, u64> {
         std::mem::take(&mut self.tls_vars)
+    }
+    pub fn take_extra_instances(&mut self) -> Vec<Instance<'tcx>> {
+        std::mem::take(&mut self.extra_instances)
     }
 
     fn alloc_reg(&mut self) -> Reg {
@@ -1371,6 +1380,21 @@ impl<'tcx> MirToLir<'tcx> {
                         .ok()
                         .flatten()
                         .unwrap_or_else(|| Instance::mono(self.tcx, *def_id));
+                    // Cross-crate-inlinable fn used as a value: same local-emission rule.
+                    let extra_def = match inst.def {
+                        ty::InstanceKind::Item(d) | ty::InstanceKind::Intrinsic(d) => {
+                            if self.tcx.cross_crate_inlinable(d) || self.tcx.intrinsic(d).is_some()
+                            {
+                                Some(d)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if extra_def.is_some() {
+                        self.extra_instances.push(inst);
+                    }
                     let sym = self.tcx.symbol_name(inst).name.to_string();
                     self.ops.push(LIROp::LoadAddr { dst, symbol: sym });
                     return Ok(dst);
@@ -1850,6 +1874,25 @@ impl<'tcx> MirToLir<'tcx> {
                             }
                         });
                         if let Some(inst) = inst_opt {
+                            // Cross-crate-inlinable callees and intrinsics with Rust
+                            // implementations carry an instantiating-crate symbol suffix —
+                            // no rlib defines them. Emit their bodies locally via
+                            // codegen_crate's worklist.
+                            let extra_def = match inst.def {
+                                ty::InstanceKind::Item(d) | ty::InstanceKind::Intrinsic(d) => {
+                                    if self.tcx.cross_crate_inlinable(d)
+                                        || self.tcx.intrinsic(d).is_some()
+                                    {
+                                        Some(d)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if extra_def.is_some() {
+                                self.extra_instances.push(inst);
+                            }
                             let sym = self.tcx.symbol_name(inst).name.to_string();
                             self.ops.push(LIROp::Call(sym));
                         } else {

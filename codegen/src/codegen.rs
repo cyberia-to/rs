@@ -395,7 +395,10 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         entry_offset: 0,
     };
 
-    let binary = emit_macho(&input);
+    // The monolithic emitter can only bind symbols defined in this crate; when the
+    // program references external functions through vtables (e.g. std's Debug impls),
+    // it returns Err and the Mach-O linker path (dyld binding) must be used instead.
+    let binary = emit_macho(&input).unwrap_or_default();
 
     TridentOutput {
         binary,

@@ -114,7 +114,7 @@ impl<'tcx> MirToLir<'tcx> {
         let mut total_arg_slots = 0u32;
         for i in 1..=arg_count {
             let local = mir::Local::from_usize(i);
-            let arg_ty = body.local_decls[local].ty;
+            let arg_ty = self.mono_ty(body.local_decls[local].ty);
             let arg_size = self.type_size(arg_ty);
             total_arg_slots += if arg_size <= 8 {
                 1
@@ -128,7 +128,7 @@ impl<'tcx> MirToLir<'tcx> {
         let mut reg_slot = 0u32;
         for i in 1..=arg_count {
             let local = mir::Local::from_usize(i);
-            let arg_ty = body.local_decls[local].ty;
+            let arg_ty = self.mono_ty(body.local_decls[local].ty);
             let arg_size = self.type_size(arg_ty);
             let slots = if arg_size <= 8 {
                 1u32
@@ -199,7 +199,7 @@ impl<'tcx> MirToLir<'tcx> {
                 // to a simple local place (no projection).  Materialize to a BSS static and
                 // mark the local as memory-backed, so downstream code can find its fields.
                 if place.projection.is_empty() && !self.mem_locals.contains(&place.local) {
-                    let place_ty = place.ty(&body.local_decls, self.tcx).ty;
+                    let place_ty = self.mono_ty(place.ty(&body.local_decls, self.tcx).ty);
                     if self.type_size(place_ty) > 8 && self.is_composite_type(place_ty) {
                         let local = place.local;
                         let ptr_reg = self.lower_composite_aggregate(rvalue, place_ty, body)?;
@@ -300,7 +300,7 @@ impl<'tcx> MirToLir<'tcx> {
                 // Write each field at its correct byte offset.
                 for (idx, _) in fields.iter_enumerated() {
                     let field_operand = &fields[idx];
-                    let field_ty = field_operand.ty(&body.local_decls, self.tcx);
+                    let field_ty = self.mono_ty(field_operand.ty(&body.local_decls, self.tcx));
                     let field_offset =
                         self.field_byte_offset_with_variant(place_ty, idx.as_usize(), variant_idx)
                             as i32;
@@ -372,7 +372,7 @@ impl<'tcx> MirToLir<'tcx> {
         }
 
         let mut cur_reg = self.local_reg(place.local);
-        let mut cur_ty = body.local_decls[place.local].ty;
+        let mut cur_ty = self.mono_ty(body.local_decls[place.local].ty);
         // If the local is memory-backed (e.g. spilled composite arg), start in Mem mode.
         let mut is_mem = self.mem_locals.contains(&place.local);
         // When we enter a Downcast, track which variant index we're in so that
@@ -523,7 +523,7 @@ impl<'tcx> MirToLir<'tcx> {
         match self.lower_place(place, body)? {
             PlaceLoc::Reg(r) => Ok(r),
             PlaceLoc::Mem(ptr) => {
-                let ty = place.ty(&body.local_decls, self.tcx).ty;
+                let ty = self.mono_ty(place.ty(&body.local_decls, self.tcx).ty);
                 let sz = self.type_size(ty) as u8;
                 let dst = self.alloc_reg();
                 if sz > 0 && sz < 8 {
@@ -619,6 +619,18 @@ impl<'tcx> MirToLir<'tcx> {
         )
     }
 
+    /// Monomorphize a type taken from the (still generic) MIR body with this
+    /// instance's args. `tcx.instance_mir` returns the definition body; every
+    /// type read from `local_decls` must pass through here before layout or
+    /// cast lowering touches it.
+    fn mono_ty(&self, ty: ty::Ty<'tcx>) -> ty::Ty<'tcx> {
+        self.tcx.instantiate_and_normalize_erasing_regions(
+            self.instance.args,
+            ty::TypingEnv::fully_monomorphized(),
+            ty::EarlyBinder::bind(ty),
+        )
+    }
+
     fn type_size(&self, ty: ty::Ty<'tcx>) -> u64 {
         let env = ty::TypingEnv::fully_monomorphized();
         self.tcx
@@ -675,7 +687,10 @@ impl<'tcx> MirToLir<'tcx> {
                 let a = self.lower_operand(lhs, body)?;
                 let b = self.lower_operand(rhs, body)?;
                 // Use the operand type to pick signed vs unsigned variant.
-                let signed = matches!(lhs.ty(&body.local_decls, self.tcx).kind(), TyKind::Int(_));
+                let signed = matches!(
+                    self.mono_ty(lhs.ty(&body.local_decls, self.tcx)).kind(),
+                    TyKind::Int(_)
+                );
                 let insn = match op {
                     mir::BinOp::Add | mir::BinOp::AddUnchecked => LIROp::Add(dst, a, b),
                     mir::BinOp::Sub | mir::BinOp::SubUnchecked => LIROp::Sub(dst, a, b),
@@ -798,13 +813,9 @@ impl<'tcx> MirToLir<'tcx> {
 
             mir::Rvalue::Cast(kind, operand, to_ty) => {
                 let src = self.lower_operand(operand, body)?;
-                self.lower_cast(
-                    dst,
-                    src,
-                    *kind,
-                    operand.ty(&body.local_decls, self.tcx),
-                    *to_ty,
-                );
+                let from_ty = self.mono_ty(operand.ty(&body.local_decls, self.tcx));
+                let to_ty = self.mono_ty(*to_ty);
+                self.lower_cast(dst, src, *kind, from_ty, to_ty);
             }
 
             // &(*ptr) or &raw const (*ptr) — the address is the pointer value itself.
@@ -821,7 +832,7 @@ impl<'tcx> MirToLir<'tcx> {
                     // store the local's current value there, return its address.
                     // This is correct for read-only references and short-lived borrows.
                     let val = self.local_reg(place.local);
-                    let ty = body.local_decls[place.local].ty;
+                    let ty = self.mono_ty(body.local_decls[place.local].ty);
                     let sz = self.type_size(ty).max(1) as usize;
                     let sym = format!("__local_ref_{}", self.agg_counter);
                     self.agg_counter += 1;
@@ -917,7 +928,7 @@ impl<'tcx> MirToLir<'tcx> {
                         self.agg_counter += 1;
                         let field_tys: Vec<ty::Ty<'tcx>> = fields
                             .iter_enumerated()
-                            .map(|(_, op)| op.ty(&body.local_decls, self.tcx))
+                            .map(|(_, op)| self.mono_ty(op.ty(&body.local_decls, self.tcx)))
                             .collect();
                         let (offsets, total) = self.sequential_offsets(&field_tys);
                         let sym = format!("__agg_{agg_id}");
@@ -1028,7 +1039,7 @@ impl<'tcx> MirToLir<'tcx> {
             // fill it with copies of operand, return its address.
             mir::Rvalue::Repeat(operand, count) => {
                 let n = count.try_to_target_usize(self.tcx).unwrap_or(0);
-                let elem_ty = operand.ty(&body.local_decls, self.tcx);
+                let elem_ty = self.mono_ty(operand.ty(&body.local_decls, self.tcx));
                 let elem_sz = self.type_size(elem_ty).max(1);
                 let total = n * elem_sz;
                 let agg_id = self.agg_counter;
@@ -1272,7 +1283,7 @@ impl<'tcx> MirToLir<'tcx> {
                     return Ok(self.local_reg(place.local));
                 }
                 // Not memory-backed yet — spill to BSS.
-                let ty = place.ty(&body.local_decls, self.tcx).ty;
+                let ty = self.mono_ty(place.ty(&body.local_decls, self.tcx).ty);
                 let size = self.type_size(ty) as usize;
                 let sym = format!("__carg_{}", self.agg_counter);
                 self.agg_counter += 1;
@@ -1350,15 +1361,16 @@ impl<'tcx> MirToLir<'tcx> {
                 }
                 // FnDef constant → load the function's address.
                 if let TyKind::FnDef(def_id, substs) = c.const_.ty().kind() {
-                    let inst = Instance::try_resolve(
-                        self.tcx,
-                        ty::TypingEnv::fully_monomorphized(),
-                        *def_id,
-                        substs,
-                    )
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| Instance::mono(self.tcx, *def_id));
+                    let env = ty::TypingEnv::fully_monomorphized();
+                    let mono_substs = self.tcx.instantiate_and_normalize_erasing_regions(
+                        self.instance.args,
+                        env,
+                        ty::EarlyBinder::bind(*substs),
+                    );
+                    let inst = Instance::try_resolve(self.tcx, env, *def_id, mono_substs)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| Instance::mono(self.tcx, *def_id));
                     let sym = self.tcx.symbol_name(inst).name.to_string();
                     self.ops.push(LIROp::LoadAddr { dst, symbol: sym });
                     return Ok(dst);
@@ -1578,7 +1590,7 @@ impl<'tcx> MirToLir<'tcx> {
 
             // Drop: call drop_in_place::<T> when the type has a non-trivial destructor.
             mir::TerminatorKind::Drop { place, target, .. } => {
-                let ty = place.ty(&body.local_decls, self.tcx).ty;
+                let ty = self.mono_ty(place.ty(&body.local_decls, self.tcx).ty);
                 let typing_env = ty::TypingEnv::fully_monomorphized();
                 if ty.needs_drop(self.tcx, typing_env) {
                     let def_id = self
@@ -1777,7 +1789,7 @@ impl<'tcx> MirToLir<'tcx> {
                 } else {
                     let mut reg_slot = 0u32;
                     for arg in args.iter() {
-                        let arg_ty = arg.node.ty(&body.local_decls, self.tcx);
+                        let arg_ty = self.mono_ty(arg.node.ty(&body.local_decls, self.tcx));
                         let arg_size = self.type_size(arg_ty);
                         let slots = if arg_size <= 8 {
                             1u32
@@ -2274,7 +2286,7 @@ impl<'tcx> MirToLir<'tcx> {
                     match self.lower_place(destination, body)? {
                         PlaceLoc::Reg(d) => { if d != src { self.ops.push(LIROp::Move(d, src)); } }
                         PlaceLoc::Mem(p) => {
-                            let ty  = destination.ty(&body.local_decls, self.tcx).ty;
+                            let ty  = self.mono_ty(destination.ty(&body.local_decls, self.tcx).ty);
                             let sz  = self.type_size(ty) as u8;
                             if sz > 0 && sz < 8 {
                                 self.ops.push(LIROp::StoreSize { src, base: p, offset: 0, size: sz });
@@ -2545,7 +2557,7 @@ impl<'tcx> MirToLir<'tcx> {
             "volatile_load" | "unaligned_volatile_load" => {
                 if !args.is_empty() {
                     let ptr = self.lower_operand(&args[0].node, body)?;
-                    let ty  = destination.ty(&body.local_decls, self.tcx).ty;
+                    let ty  = self.mono_ty(destination.ty(&body.local_decls, self.tcx).ty);
                     let sz  = self.type_size(ty) as u8;
                     let d   = self.alloc_reg();
                     if sz > 0 && sz < 8 {

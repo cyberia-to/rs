@@ -259,7 +259,7 @@ const S_ZEROFILL: u32 = 1;
 ///
 /// Read-only statics go to __TEXT,__cstring.
 /// Writable (BSS) statics go to __DATA,__bss (S_ZEROFILL, no file content).
-pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
+pub fn emit_macho(input: &EmitInput) -> Result<Vec<u8>, String> {
     const SEG: usize = 72; // SegmentCommand64
     const SEC: usize = 80; // Section64
     const LDS: usize = 16; // LinkeditDataCommand
@@ -389,7 +389,13 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
         } else if let Some(&fn_off) = input.fn_offsets.get(&r.symbol) {
             code_vm_addr + fn_off as u64
         } else {
-            panic!("unknown reloc symbol: {}", r.symbol);
+            // External symbol (e.g. a vtable fn-ptr into prebuilt std) — the
+            // monolithic emitter has no dyld binding; the caller must use the
+            // Mach-O linker path instead.
+            return Err(format!(
+                "monolithic emitter cannot bind external symbol: {}",
+                r.symbol
+            ));
         };
         let adrp_pc = code_vm_addr + r.adrp_offset as u64;
         let page_delta = (((target & !0xFFF) as i64) - ((adrp_pc & !0xFFF) as i64)) >> 12;
@@ -412,8 +418,6 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
     }
 
     let mut out: Vec<u8> = Vec::with_capacity(sig_off + sig_size + 64);
-
-    // Mach-O header.
     out.extend_from_slice(unsafe {
         as_bytes(&MachHeader64 {
             magic: MH_MAGIC_64,
@@ -682,7 +686,7 @@ pub fn emit_macho(input: &EmitInput) -> Vec<u8> {
     assert_eq!(sig.len(), sig_size, "signature size mismatch — layout bug");
     out.extend_from_slice(&sig);
 
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,7 +1202,7 @@ mod tests {
             fn_offsets: std::collections::HashMap::new(),
             entry_offset: 0,
         };
-        let b = emit_macho(&input);
+        let b = emit_macho(&input).expect("emit_macho test");
         assert_eq!(&b[0..4], &[0xCF, 0xFA, 0xED, 0xFE]);
         assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 2); // MH_EXECUTE
     }
@@ -1218,7 +1222,7 @@ mod tests {
             fn_offsets: std::collections::HashMap::new(),
             entry_offset: 0,
         };
-        let b = emit_macho(&input);
+        let b = emit_macho(&input).expect("emit_macho test");
         assert_eq!(&b[0..4], &[0xCF, 0xFA, 0xED, 0xFE]);
         assert!(
             b.windows(msg.len()).any(|w| w == msg.as_ref()),
@@ -1236,7 +1240,7 @@ mod tests {
             fn_offsets: std::collections::HashMap::new(),
             entry_offset: 0,
         };
-        let b = emit_macho(&input);
+        let b = emit_macho(&input).expect("emit_macho test");
         let mut off = 32usize;
         let mut found: Option<u64> = None;
         while off + 8 <= b.len() {
@@ -1284,7 +1288,7 @@ mod tests {
             fn_offsets: std::collections::HashMap::new(),
             entry_offset: 0,
         };
-        let b = emit_macho(&input);
+        let b = emit_macho(&input).expect("emit_macho test");
         assert_eq!(&b[0..4], &[0xCF, 0xFA, 0xED, 0xFE]);
         assert!(
             b.windows(msg.len()).any(|w| w == msg.as_ref()),
@@ -1328,7 +1332,7 @@ mod tests {
             entry_offset: 0,
         };
 
-        let binary = emit_macho(&input);
+        let binary = emit_macho(&input).expect("emit_macho test");
         assert_eq!(&binary[0..4], &[0xCF, 0xFA, 0xED, 0xFE], "bad magic");
 
         let path = std::env::temp_dir().join("pure_rs_hello_world_test");
@@ -1367,7 +1371,8 @@ mod tests {
             static_relocs: vec![],
             fn_offsets: std::collections::HashMap::new(),
             entry_offset: 0,
-        });
+        })
+        .expect("emit_macho exit42");
 
         let path = std::env::temp_dir().join("pure_rs_exit42");
         std::fs::write(&path, &binary).unwrap();

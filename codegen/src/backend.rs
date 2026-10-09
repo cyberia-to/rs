@@ -1,8 +1,10 @@
 use std::any::Any;
 use std::os::unix::fs::PermissionsExt;
 
+use rustc_codegen_ssa::back::archive::ArArchiveBuilderBuilder;
+use rustc_codegen_ssa::back::link::link_binary;
 use rustc_codegen_ssa::traits::CodegenBackend;
-use rustc_codegen_ssa::{CodegenResults, CrateInfo};
+use rustc_codegen_ssa::{CodegenResults, CompiledModule, CrateInfo, ModuleKind};
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
@@ -92,7 +94,8 @@ impl CodegenBackend for TridentBackend {
         let wants_exe = outputs.outputs.contains_key(&OutputType::Exe);
         let using_tmp_obj;
 
-        // Always write the .o file (needed for the linker path).
+        // Always materialize the .o file: the exe path links it here, the
+        // rlib/staticlib path archives it in `link()`.
         let obj_path: std::path::PathBuf = if wants_obj {
             let obj_out = outputs.path(OutputType::Object);
             if let OutFileName::Real(ref p) = obj_out {
@@ -104,9 +107,17 @@ impl CodegenBackend for TridentBackend {
                 using_tmp_obj = true;
                 std::env::temp_dir().join(format!("trident_{}.o", std::process::id()))
             }
-        } else {
+        } else if wants_exe {
             using_tmp_obj = true;
             std::env::temp_dir().join(format!("trident_{}.o", std::process::id()))
+        } else {
+            // Non-exe outputs (rlib / staticlib): keep the object alive for
+            // `link()` — rustc's link_binary archives it from CodegenResults.
+            using_tmp_obj = false;
+            let p = outputs.temp_path_for_cgu(OutputType::Object, "trident", None);
+            std::fs::write(&p, &out.object)
+                .unwrap_or_else(|e| panic!("write obj {}: {e}", p.display()));
+            p
         };
 
         // Write to tmp path if we haven't written via the wants_obj branch.
@@ -114,10 +125,18 @@ impl CodegenBackend for TridentBackend {
             std::fs::write(&obj_path, &out.object).unwrap_or_else(|e| panic!("write tmp obj: {e}"));
         }
 
-        if wants_exe || !wants_obj {
+        if wants_exe {
             let exe_out = outputs.path(OutputType::Exe);
             if let OutFileName::Real(ref p) = exe_out {
-                if !invoke_macho_linker(&obj_path, p) {
+                let linked = invoke_macho_linker(&obj_path, p);
+                if !linked && out.binary.is_empty() {
+                    panic!(
+                        "cannot produce {}: macho-linker unavailable and the monolithic \
+                         emitter cannot bind external symbols (e.g. std vtable fn-ptrs)",
+                        p.display()
+                    );
+                }
+                if !linked {
                     std::fs::write(p, &out.binary)
                         .unwrap_or_else(|e| panic!("write exe {}: {e}", p.display()));
                 }
@@ -130,8 +149,23 @@ impl CodegenBackend for TridentBackend {
             std::fs::remove_file(&obj_path).ok();
         }
 
+        let modules = if wants_exe {
+            vec![]
+        } else {
+            vec![CompiledModule {
+                name: "trident".to_string(),
+                kind: ModuleKind::Regular,
+                object: Some(obj_path),
+                dwarf_object: None,
+                bytecode: None,
+                assembly: None,
+                llvm_ir: None,
+                links_from_incr_cache: vec![],
+            }]
+        };
+
         let cr = CodegenResults {
-            modules: vec![],
+            modules,
             allocator_module: None,
             crate_info: out.crate_info,
         };
@@ -140,11 +174,31 @@ impl CodegenBackend for TridentBackend {
 
     fn link(
         &self,
-        _sess: &Session,
-        _codegen_results: CodegenResults,
-        _metadata: EncodedMetadata,
-        _outputs: &OutputFilenames,
+        sess: &Session,
+        codegen_results: CodegenResults,
+        metadata: EncodedMetadata,
+        outputs: &OutputFilenames,
     ) {
-        // Binary already written in join_codegen.
+        use rustc_session::config::CrateType;
+        // Executables were already linked by macho-linker in join_codegen.
+        // Everything else (rlib, staticlib, standalone metadata) delegates to
+        // rustc's link_binary with the pure-Rust ArArchiveBuilder — no LLVM,
+        // no ranlib, no system linker on this path.
+        let exe_pending = outputs.outputs.contains_key(&OutputType::Exe)
+            && codegen_results
+                .crate_info
+                .crate_types
+                .iter()
+                .any(|c| *c == CrateType::Executable);
+        if !exe_pending {
+            link_binary(
+                sess,
+                &ArArchiveBuilderBuilder,
+                codegen_results,
+                metadata,
+                outputs,
+                self.name(),
+            );
+        }
     }
 }

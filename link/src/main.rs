@@ -29,7 +29,7 @@ fn main() {
         fn_offsets: std::collections::HashMap::new(),
         entry_offset: 0,
     };
-    let binary = emit_macho(&input);
+    let binary = emit_macho(&input).expect("monolithic hello-world emission");
     let path = "/tmp/hello_pure_rs";
     std::fs::write(path, &binary).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();

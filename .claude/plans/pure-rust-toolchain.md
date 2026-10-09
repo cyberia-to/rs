@@ -246,13 +246,31 @@ allocator shim (`__rust_alloc*` → libSystem malloc family, mangled with
 `mangle_internal_symbol`); cross-crate-inlinable + `InstanceKind::Intrinsic` bodies
 emitted locally (fixpoint worklist).
 
-**Current blocker:** the std binary faults at runtime early in init — `str x17, [x16]`
-with x16 loaded from `[x3 - 0x118]` (EXC_BAD_ACCESS in drop/copy glue of std's io
-machinery, likely wrong data flow around the BSS-vtable runtime init or a negative-offset
-memory access). Debugged to instruction level; needs a traced session (breakpoint at the
-fault, walk back to the bad pointer producer).
+**Runtime fault FIXED (2026-10-09, revision 68a42f8).** Root cause: memory-backed MIR
+locals (composite aggregates >8 bytes, multi-slot arg spills) map the local to a register
+holding the address of a backing static, emitted once at materialization. Stores to the
+same local from OTHER basic blocks (one switch arm per enum variant — first hit:
+`std::io::error::repr_bitpacked::decode_repr`) used that register without a dominating
+def → garbage pointer → EXC_BAD_ACCESS. `local_reg` now rematerializes a fresh LoadAddr
+per basic block. Verified: the std+itoa binary runs main to completion.
 
-Phase 3 gaps remaining: multi-byte Repeat fill correctness, float↔int cast (needs FP regs in LIR), rare statement kinds, the std runtime fault above, ripgrep end-to-end.
+**Remaining runtime gaps (deterministic, isolated):**
+1. Pure `fn main() { process::exit(N) }` binaries HANG in the exit path (sample: leaf
+   spinning in our __text; frames look like a handler walk calling a bogus in-__text
+   address — suspect startup registering an atexit/handler with wrong args).
+2. The itoa std binary exits 40 instead of 42 (bit 1 cleared) and prints nothing —
+   stdout write path or argument passing corrupts values.
+3. Both use the technique that worked for the fault: `sample`/`otool -tV` to isolate,
+   `TRIDENT_DEBUG_LIR=1` to read our lowering.
+
+Verification (2026-10-09, HEAD 68a42f8):
+- `cargo test --workspace` — 173 tests green.
+- `bash codegen/tests/run_integration.sh` — 11/11 PASS.
+- `bash macho-linker/tests/link_integration.sh` — 2/2 PASS.
+- `pure-rust-check cargo-lock` — PASS.
+- std+itoa binary: links, loads, runs main to completion; exit 40 (want 42), no stdout.
+
+Phase 3 gaps remaining: multi-byte Repeat fill correctness, float↔int cast (needs FP regs in LIR), rare statement kinds, the two runtime gaps above, ripgrep end-to-end.
 Phase 4 gap: requires nightly toolchain + modifying std source + `build-std` to verify.
 
 ### Phase 0 — Inventory and gating (2 sessions)

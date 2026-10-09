@@ -69,7 +69,12 @@ pub struct Layout {
     pub linkedit_vmaddr: u64,
 }
 
-pub fn perform(objects: &[ObjData], syms: &mut SymbolTable, n_imports: usize) -> Layout {
+pub fn perform(
+    objects: &[ObjData],
+    syms: &mut SymbolTable,
+    n_imports: usize,
+    n_got: usize,
+) -> Layout {
     // ---- Step 1: merge sections from all objects ----
     let mut sec_map: HashMap<String, usize> = HashMap::new();
     let mut merged: Vec<MergedSection> = Vec::new();
@@ -162,9 +167,9 @@ pub fn perform(objects: &[ObjData], syms: &mut SymbolTable, n_imports: usize) ->
         None
     };
 
-    // __DATA,__got (if needed)
-    let got_idx = if n_imports > 0 {
-        let got_data = vec![0u8; n_imports * GOT_ENTRY_SIZE];
+    // __DATA,__got (if needed): import slots followed by local-GOT slots.
+    let got_idx = if n_got > 0 {
+        let got_data = vec![0u8; n_got * GOT_ENTRY_SIZE];
         let got_len = got_data.len();
         let key = "__DATA:__got".to_string();
         let i = merged.len();
@@ -369,12 +374,16 @@ pub fn perform(objects: &[ObjData], syms: &mut SymbolTable, n_imports: usize) ->
     let mut stub_addrs: Vec<u64> = Vec::new();
     let mut got_addrs: Vec<u64> = Vec::new();
 
-    if let (Some(s_idx), Some(g_idx)) = (stubs_idx, got_idx) {
-        let stubs_base = merged[s_idx].vm_addr;
+    if let Some(g_idx) = got_idx {
         let got_base = merged[g_idx].vm_addr;
+        for i in 0..n_got {
+            got_addrs.push(got_base + (i * GOT_ENTRY_SIZE) as u64);
+        }
+    }
+    if let (Some(s_idx), Some(_)) = (stubs_idx, got_idx) {
+        let stubs_base = merged[s_idx].vm_addr;
         for i in 0..n_imports {
             stub_addrs.push(stubs_base + (i * STUB_SIZE) as u64);
-            got_addrs.push(got_base + (i * GOT_ENTRY_SIZE) as u64);
         }
         // Update stub addresses in symbol table.
         for sym in syms.syms.values_mut() {

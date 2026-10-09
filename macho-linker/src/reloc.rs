@@ -325,11 +325,15 @@ fn got_addr_for_target(
         if let SymKind::DylibImport { got_idx, .. } = gs.kind {
             return Ok(layout.got_addrs[got_idx]);
         }
-    }
-    // If the symbol is locally defined and referenced via GOT (unusual but possible),
-    // fall back to its direct address — this is non-standard but safe.
-    if let Some(gs) = syms.syms.get(name) {
-        return Ok(gs.addr);
+        // Locally defined symbol referenced via GOT: ld64 synthesizes a GOT
+        // slot holding the symbol's absolute address. Point the reloc at that
+        // slot (a direct-address fallback would make `ldr [got]` read the
+        // function's first instructions as a pointer).
+        if let Some(pos) = syms.local_gots.iter().position(|n| n == name) {
+            let idx = syms.imports.len() + pos;
+            return Ok(layout.got_addrs[idx]);
+        }
+        return Err(format!("GOT reloc: no GOT slot allocated for '{name}'"));
     }
     Err(format!("GOT reloc: unknown symbol '{name}'"))
 }

@@ -137,8 +137,16 @@ fn is_macho(data: &[u8]) -> bool {
 pub fn parse_object(data: &[u8], name: &str) -> Result<ObjData, String> {
     let file = object::File::parse(data).map_err(|e| format!("parse {name}: {e}"))?;
 
-    let sections = parse_sections(&file, data)?;
-    let symbols = parse_symbols(&file, &sections)?;
+    // Object-unique id for scoping LOCAL symbols. LLVM reuses local names
+    // (ltmp0, ltmp1, l_anon.<hash>.N, __MergedGlobals) in every object; the
+    // global symbol table is keyed by name, so unscoped locals collide across
+    // objects and relocs resolve to another object's symbol.
+    static OBJ_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let obj_id = OBJ_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let local_suffix = format!("#{obj_id}");
+
+    let sections = parse_sections(&file, data, &local_suffix)?;
+    let symbols = parse_symbols(&file, &sections, &local_suffix)?;
 
     Ok(ObjData {
         source: name.to_string(),
@@ -151,7 +159,11 @@ fn seg_name_of(sec: &object::Section<'_, '_>) -> String {
     sec.segment_name().ok().flatten().unwrap_or("").to_string()
 }
 
-fn parse_sections(file: &object::File<'_>, raw: &[u8]) -> Result<Vec<SecData>, String> {
+fn parse_sections(
+    file: &object::File<'_>,
+    raw: &[u8],
+    local_suffix: &str,
+) -> Result<Vec<SecData>, String> {
     let mut out = Vec::new();
     for sec in file.sections() {
         let name = sec.name().unwrap_or("").to_string();
@@ -177,7 +189,7 @@ fn parse_sections(file: &object::File<'_>, raw: &[u8]) -> Result<Vec<SecData>, S
         // Mach-O section flags from raw bytes.
         let flags = sec_flags(file, &sec);
 
-        let relocs = parse_relocs(file, &sec, raw, &out, file.sections().count())?;
+        let relocs = parse_relocs(file, &sec, raw, &out, file.sections().count(), local_suffix)?;
         out.push(SecData {
             seg,
             name,
@@ -213,6 +225,7 @@ fn parse_relocs(
     raw_file: &[u8],
     sections_so_far: &[SecData],
     _total_sections: usize,
+    local_suffix: &str,
 ) -> Result<Vec<Reloc>, String> {
     let mut out = Vec::new();
     let sec_raw = sec.data().unwrap_or(&[]);
@@ -262,7 +275,20 @@ fn parse_relocs(
                 let sym = file
                     .symbol_by_index(idx)
                     .map_err(|e| format!("symbol {idx:?}: {e}"))?;
-                RelocTarget::Symbol(sym.name().unwrap_or("").to_string())
+                let raw_name = sym.name().unwrap_or("");
+                // Scope local symbols to their object, matching the renaming in
+                // parse_symbols — otherwise relocs reference another object's
+                // same-named local (ltmp0 exists in 100+ objects).
+                let local_def = sym.is_definition()
+                    && !matches!(
+                        sym.scope(),
+                        object::SymbolScope::Linkage | object::SymbolScope::Dynamic
+                    );
+                if local_def {
+                    RelocTarget::Symbol(format!("{raw_name}{local_suffix}"))
+                } else {
+                    RelocTarget::Symbol(raw_name.to_string())
+                }
             }
             RelocationTarget::Section(idx) => {
                 let s = file
@@ -309,7 +335,11 @@ fn read_addend(data: &[u8], off: usize, kind: RelocKind, size_bits: u8) -> i64 {
     }
 }
 
-fn parse_symbols(file: &object::File<'_>, sections: &[SecData]) -> Result<Vec<SymData>, String> {
+fn parse_symbols(
+    file: &object::File<'_>,
+    sections: &[SecData],
+    local_suffix: &str,
+) -> Result<Vec<SymData>, String> {
     let mut out = Vec::new();
     for sym in file.symbols() {
         let name = sym.name().unwrap_or("").to_string();
@@ -324,6 +354,10 @@ fn parse_symbols(file: &object::File<'_>, sections: &[SecData]) -> Result<Vec<Sy
         }
 
         let is_defined = sym.is_definition();
+        let is_local_def = is_defined && !matches!(
+            sym.scope(),
+            object::SymbolScope::Linkage | object::SymbolScope::Dynamic
+        );
         let is_global = matches!(
             sym.scope(),
             object::SymbolScope::Linkage | object::SymbolScope::Dynamic
@@ -345,6 +379,15 @@ fn parse_symbols(file: &object::File<'_>, sections: &[SecData]) -> Result<Vec<Sy
         } else {
             (None, 0)
         };
+
+        let name = if is_local_def {
+            format!("{}{local_suffix}", sym.name().unwrap_or(""))
+        } else {
+            sym.name().unwrap_or("").to_string()
+        };
+        if name.is_empty() {
+            continue;
+        }
 
         out.push(SymData {
             name,

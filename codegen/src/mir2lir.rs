@@ -1830,53 +1830,104 @@ impl<'tcx> MirToLir<'tcx> {
                 // Virtual calls: arg[0] is the fat pointer — load only data_ptr (offset 0) into x0.
                 // For composite types (size > 8 bytes), the arg is memory-backed:
                 // expand it into consecutive register slots by loading 8-byte chunks.
+                //
+                // Two-phase setup: lower every argument into a fresh scratch register
+                // FIRST, then move scratches into x0..xN. Lowering directly into arg
+                // registers breaks when an argument's value already lives in a later
+                // arg register (e.g. forwarding argc/argv in lang_start): the earlier
+                // Move clobbers the source before the later Move reads it.
+                enum PreparedArg {
+                    /// `slots` = register slots occupied (fat pointers take 2 even
+                    /// though they lower to a single pair-address register).
+                    Simple { scratch: Reg, slots: u32 },
+                    Composite { ptr: Reg, slots: u32 },
+                }
+                let mut prepared: Vec<PreparedArg> = Vec::with_capacity(args.len());
+                for arg in args.iter() {
+                    let arg_ty = self.mono_ty(arg.node.ty(&body.local_decls, self.tcx));
+                    let arg_size = self.type_size(arg_ty);
+                    let slots = if arg_size <= 8 {
+                        1u32
+                    } else {
+                        ((arg_size + 7) / 8) as u32
+                    };
+                    if slots > 1 && self.is_composite_type(arg_ty) {
+                        // Arg lives in memory; get the backing pointer without loading.
+                        let ptr = self.lower_composite_arg_ptr(&arg.node, body)?;
+                        prepared.push(PreparedArg::Composite { ptr, slots });
+                    } else {
+                        let src = self.lower_operand(&arg.node, body)?;
+                        // Copy into a scratch vreg (allocator starts above the arg
+                        // range, so this can never be clobbered by arg moves).
+                        let scratch = self.alloc_reg();
+                        if src != scratch {
+                            self.ops.push(LIROp::Move(scratch, src));
+                        }
+                        prepared.push(PreparedArg::Simple { scratch, slots });
+                    }
+                }
+
                 if virtual_fn_ptr.is_some() {
                     // x0 = fat_ptr.data_ptr; x1..xN = remaining args.
-                    if let Some(arg0) = args.first() {
-                        let fat_ptr_addr = self.lower_operand(&arg0.node, body)?;
-                        self.ops.push(LIROp::Load {
-                            dst: Reg(0),
-                            base: fat_ptr_addr,
-                            offset: 0,
-                        });
-                    }
-                    for (i, arg) in args.iter().skip(1).enumerate() {
-                        let src = self.lower_operand(&arg.node, body)?;
-                        let reg_idx = (i + 1) as u32;
-                        if src.0 != reg_idx {
-                            self.ops.push(LIROp::Move(Reg(reg_idx), src));
+                    let mut reg_slot = 0u32;
+                    for (i, prepared_arg) in prepared.into_iter().enumerate() {
+                        if i == 0 {
+                            // fat pointer: load data_ptr into x0 (the scratch /
+                            // composite ptr is the address of the {data, vtable} pair)
+                            let pair_addr = match prepared_arg {
+                                PreparedArg::Simple { scratch, .. } => scratch,
+                                PreparedArg::Composite { ptr, .. } => ptr,
+                            };
+                            self.ops.push(LIROp::Load {
+                                dst: Reg(0),
+                                base: pair_addr,
+                                offset: 0,
+                            });
+                            reg_slot = 1;
+                            continue;
+                        }
+                        match prepared_arg {
+                            PreparedArg::Simple { scratch, slots } => {
+                                if scratch.0 != reg_slot {
+                                    self.ops.push(LIROp::Move(Reg(reg_slot), scratch));
+                                }
+                                reg_slot += slots;
+                            }
+                            PreparedArg::Composite { ptr, slots } => {
+                                for slot in 0..slots {
+                                    let off = (slot * 8) as i32;
+                                    self.ops.push(LIROp::Load {
+                                        dst: Reg(reg_slot + slot),
+                                        base: ptr,
+                                        offset: off,
+                                    });
+                                }
+                                reg_slot += slots;
+                            }
                         }
                     }
                 } else {
                     let mut reg_slot = 0u32;
-                    for arg in args.iter() {
-                        let arg_ty = self.mono_ty(arg.node.ty(&body.local_decls, self.tcx));
-                        let arg_size = self.type_size(arg_ty);
-                        let slots = if arg_size <= 8 {
-                            1u32
-                        } else {
-                            ((arg_size + 7) / 8) as u32
-                        };
-
-                        if slots > 1 && self.is_composite_type(arg_ty) {
-                            // Arg lives in memory; get the backing pointer without loading.
-                            let ptr = self.lower_composite_arg_ptr(&arg.node, body)?;
-                            for slot in 0..slots {
-                                let off = (slot * 8) as i32;
-                                let dst_reg = Reg(reg_slot + slot);
-                                self.ops.push(LIROp::Load {
-                                    dst: dst_reg,
-                                    base: ptr,
-                                    offset: off,
-                                });
+                    for prepared_arg in prepared.into_iter() {
+                        match prepared_arg {
+                            PreparedArg::Simple { scratch, slots } => {
+                                if scratch.0 != reg_slot {
+                                    self.ops.push(LIROp::Move(Reg(reg_slot), scratch));
+                                }
+                                reg_slot += slots;
                             }
-                        } else {
-                            let src = self.lower_operand(&arg.node, body)?;
-                            if src.0 != reg_slot {
-                                self.ops.push(LIROp::Move(Reg(reg_slot), src));
+                            PreparedArg::Composite { ptr, slots } => {
+                                for slot in 0..slots {
+                                    let off = (slot * 8) as i32;
+                                    self.ops.push(LIROp::Load {
+                                        dst: Reg(reg_slot + slot),
+                                        base: ptr,
+                                        offset: off,
+                                    });
+                                }
+                                reg_slot += slots;
                             }
                         }
-                        reg_slot += slots;
                     }
                 }
 

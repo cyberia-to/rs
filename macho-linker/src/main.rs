@@ -293,17 +293,31 @@ fn link(args: Args) -> Result<(), String> {
 
     // ---- Step 3: Resolve symbols ----
     let mut syms = resolve::resolve(&objects, &args.dylibs)?;
+    resolve::collect_local_gots(&objects, &mut syms);
     let imports = syms.imports.clone();
     let n_imports = imports.len();
+    let n_got = n_imports + syms.local_gots.len();
 
     // ---- Step 4: Layout ----
-    let mut layout = layout::perform(&objects, &mut syms, n_imports);
+    let mut layout = layout::perform(&objects, &mut syms, n_imports, n_got);
 
     // ---- Step 5: Apply relocations ----
     reloc::apply_all(&objects, &mut layout, &syms)?;
 
     // ---- Step 5b: Finalize TLV descriptors (needs resolved $tlv$init addrs) ----
     let has_tlv = tlv::finalize_tlv(&mut layout, &objects)?;
+
+    // ---- Step 5c: Fill local GOT slots with their symbols' absolute
+    // addresses (imports stay zero — dyld binds them via the fixup chain) ----
+    if let Some(g_idx) = layout.got_idx {
+        for (pos, name) in syms.local_gots.iter().enumerate() {
+            if let Some(gs) = syms.syms.get(name) {
+                let idx = n_imports + pos;
+                let off = idx * 8;
+                layout.merged[g_idx].data[off..off + 8].copy_from_slice(&gs.addr.to_le_bytes());
+            }
+        }
+    }
 
     // ---- Step 6: Emit ----
     let binary = emit::emit(&emit::EmitArgs {

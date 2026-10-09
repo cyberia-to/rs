@@ -33,6 +33,10 @@ pub struct SymbolTable {
     pub syms: HashMap<String, GlobalSym>,
     /// External symbols that need dylib binding, in GOT/stub order.
     pub imports: Vec<String>,
+    /// Locally-DEFINED symbols referenced via GOT relocs (GOT_LOAD/GOT_PAGE/
+    /// POINTER_TO_GOT). ld64 synthesizes a real GOT slot holding the symbol's
+    /// absolute address for these; the slot indices follow the import slots.
+    pub local_gots: Vec<String>,
 }
 
 pub fn resolve(
@@ -121,5 +125,34 @@ pub fn resolve(
     Ok(SymbolTable {
         syms: table,
         imports,
+        local_gots: Vec::new(),
     })
+}
+
+/// Collect defined symbols referenced through GOT relocations. Each gets a
+/// synthesized GOT slot (after the import slots) holding its absolute address.
+pub fn collect_local_gots(objects: &[ObjData], syms: &mut SymbolTable) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for obj in objects {
+        for sec in &obj.sections {
+            for r in &sec.relocs {
+                let name = match (&r.kind, &r.target) {
+                    (crate::input::RelocKind::GotPage21, crate::input::RelocTarget::Symbol(n))
+                    | (
+                        crate::input::RelocKind::GotPageOff12,
+                        crate::input::RelocTarget::Symbol(n),
+                    )
+                    | (crate::input::RelocKind::PtrToGot, crate::input::RelocTarget::Symbol(n)) => {
+                        n
+                    }
+                    _ => continue,
+                };
+                if let Some(gs) = syms.syms.get(name.as_str()) {
+                    if matches!(gs.kind, SymKind::Defined { .. }) && seen.insert(name.clone()) {
+                        syms.local_gots.push(name.clone());
+                    }
+                }
+            }
+        }
+    }
 }

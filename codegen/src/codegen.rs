@@ -297,16 +297,15 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
     // (kind Global) is not yet supported and would need `__rg_*` forwarding.
     if let Some(rustc_ast::expand::allocator::AllocatorKind::Default) = tcx.allocator_kind(()) {
         all_ops.extend(make_alloc_shim_ops(tcx));
-        // The no-alloc-shim guard static: alloc asserts this symbol exists
-        // (defined by rustc's synthesized allocator shim; we replace it).
-        all_statics.push(StaticData {
-            name: rustc_symbol_mangling::mangle_internal_symbol(
-                tcx,
-                rustc_ast::expand::allocator::NO_ALLOC_SHIM_IS_UNSTABLE,
-            ),
-            bytes: vec![0u8; 1],
-            writable: false,
-        });
+        // The no-alloc-shim guard: alloc CRATES call this symbol as a function
+        // (rustc's own shim emits a single `ret` in __text — a data symbol would
+        // land in __cstring/__const and the call would execute string bytes).
+        all_ops.push(LIROp::FnStart(rustc_symbol_mangling::mangle_internal_symbol(
+            tcx,
+            rustc_ast::expand::allocator::NO_ALLOC_SHIM_IS_UNSTABLE,
+        )));
+        all_ops.push(LIROp::Return);
+        all_ops.push(LIROp::FnEnd);
         // `__rust_alloc_error_handler_should_panic`: a FUNCTION returning the
         // OOM-strategy flag (std calls it; no rlib defines it — the shim does).
         all_ops.push(LIROp::FnStart(rustc_symbol_mangling::mangle_internal_symbol(

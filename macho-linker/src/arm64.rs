@@ -76,3 +76,19 @@ pub fn patch_ldr_pageoff(insn: u32, page_offset: u32) -> u32 {
 pub fn is_add_imm(insn: u32) -> bool {
     (insn >> 24) == 0x91
 }
+
+/// True if the instruction is a 64-bit LDR with unsigned immediate offset
+/// (`ldr Xt, [Xn, #imm*8]`, bits [31:22] = 0b1111100101).
+#[inline]
+pub fn is_ldr64_imm(insn: u32) -> bool {
+    (insn & 0xFFC0_0000) == 0xF940_0000
+}
+
+/// Rewrite `ldr Xt, [Xn, #imm*8]` as `add Xt, Xn, #imm*8` (unscaled imm12).
+/// Used for TLV descriptor addressing: ld64 converts the LDR to ADD when the
+/// descriptor is defined locally, since its address is known at link time.
+#[inline]
+pub fn ldr64_to_add(insn: u32) -> u32 {
+    let imm12 = (insn >> 10) & 0xFFF;
+    0x9100_0000u32 | (imm12 << 13) | (insn & 0x3FF)
+}

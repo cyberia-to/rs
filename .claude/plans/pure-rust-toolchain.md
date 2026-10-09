@@ -227,7 +227,7 @@ Measured on this machine, nightly-2025-11-26 installed (the 2026-05 blocker is r
 | 0 — Inventory | **COMPLETE** | `pure-rust-check`, 574 LOC — verified: `pure-rust-check cargo-lock` on the rs workspace passes (zero non-Rust source deps) |
 | 1 — macOS MVP | **Code complete** | **VERIFIED** — `codegen/tests/run_integration.sh`: 11/11 PASS, exit42 + hello_world compiled by rustc through the Trident dylib (zero LLVM codegen), executed on aarch64-apple-darwin |
 | 2 — Mach-O linker | **Code complete** | **Partially verified** — multi-object link of Trident-produced .o files runs (multi_obj exit 42); asm-level exit42 + hello pass; **rlib closure linking implemented** (demand-driven archive members, ld semantics); ripgrep end-to-end not attempted |
-| 3 — Rust coverage | **Partial** | 11/11 integration tests pass; TLS, atomics, asm, Len/Repeat, unchecked/saturating intrinsics, dyn dispatch, rlib emission, allocator shim, cross-crate-inlinable worklist implemented; deliverable (real crates) partially met — see std milestone below |
+| 3 — Rust coverage | **Partial** | 11/11 integration tests pass; TLS, atomics, asm, Len/Repeat, unchecked/saturating intrinsics, dyn dispatch, rlib emission, allocator shim, cross-crate-inlinable worklist implemented; **TLV/TLS link path complete 2026-10-09 (session 2) — std binaries load with working TLS; next fault: btree do_merge indirect call**; deliverable (real crates) partially met |
 | 4 — Darwin ABI | darwin-sys written, 2,457 LOC | Not wired into std; libc still used; deliverable not met |
 
 Verification commands and their results (2026-10-09, HEAD 0c356e2):
@@ -262,6 +262,57 @@ per basic block. Verified: the std+itoa binary runs main to completion.
    stdout write path or argument passing corrupts values.
 3. Both use the technique that worked for the fault: `sample`/`otool -tV` to isolate,
    `TRIDENT_DEBUG_LIR=1` to read our lowering.
+
+**Update 2026-10-09 (session 2) — root causes of both gaps found and fixed in
+macho-linker; std binaries now get past the exit/TLS machinery.**
+
+The std-binary failure was one linked chain, not two independent bugs:
+
+- `ARM64_RELOC_TLV_LOAD_PAGE21/PAGEOFF12` (types 8/9) were skipped, so every
+  thread-local access (`panic_count`, `thread::current`, stdio buffers) loaded
+  descriptors from a wrong page → the "handler walk" spin was a fault→SIGSEGV
+  handler→refault loop. Fixed: parse as `TlvPage21`/`TlvPageOff12`; the PAGEOFF12
+  site is an `ldr` in the .o that ld64 rewrites to `add` when the descriptor is
+  local (rlib TLS always is) — implemented `ldr64_to_add`.
+- Section flags were not preserved: `__thread_vars`/`__thread_data`/`__thread_bss`
+  lost their S_THREAD_LOCAL_* types (dyld only processes descriptors it can
+  recognize), and `__thread_bss` (S_THREAD_LOCAL_ZEROFILL) was not treated as
+  zerofill → size 0, TLS variables would overlap. Fixed: keep `flags & 0xFF`
+  from the input section, match zerofill on type 0x01|0x12, force 8-byte
+  alignment on descriptor sections (LLVM emits align 0; the LDR scaled immediate
+  truncated the descriptor address otherwise).
+- File-backed sections were placed after zerofill sections within `__DATA`
+  (priority order), so every section past the first BSS had its vm address
+  shifted by the zerofill's VM-only extent while dyld maps segment file→vm 1:1
+  → all later content (`__const`, descriptors) read from wrong addresses. This
+  was the value corruption behind "exit 40 instead of 42, no stdout". Fixed:
+  file-backed sections sort before zerofill within a segment;
+  `__thread_data`/`__thread_bss` adjacent (dyld accumulates the TLV template
+  over contiguous sections).
+- New `tlv.rs` finalization pass: rewrite each descriptor from the .o shape
+  `{__tlv_bootstrap, 0, $tlv$init_ptr}` to ld64's on-disk shape
+  `{0, 0, template_offset}` (offset validated by dyld against the template;
+  `$tlv$init` addresses resolve only after relocations, so the pass runs after
+  `apply_all`).
+- Emit `MH_HAS_TLV_DESCRIPTORS` when thunks exist — without it dyld skips
+  `ThreadLocalVariables::setUpThreadLocals` entirely and every descriptor thunk
+  stays as the `__tlv_bootstrap` error stub (verified against dyld-1376.6 source:
+  `Loader::hasTLVs = mh.flags & MH_HAS_TLV_DESCRIPTORS`).
+
+Verified with dyld at LC_MAIN entry: descriptor rewritten to v2
+`{func=_tlv_get_addr, key, offset=0x28, delta, size=0x91}` — TLS setup works.
+
+Verification (2026-10-09, session 2 HEAD):
+- `cargo test --workspace` — all suites green.
+- `bash codegen/tests/run_integration.sh` — 11/11 PASS.
+- `bash macho-linker/tests/link_integration.sh` — 2/2 PASS.
+- `pure-rust-check cargo-lock` — PASS.
+- std+`process::exit` binary: dyld loads it, TLS descriptors initialize; crash
+  moved deep into std — now in `alloc::collections::btree` do_merge
+  (`stack_overflow::thread_info::ThreadInfo` map), an indirect call through a
+  pointer into `__cstring` (faulting word 0x75722f00 = "\0/ru" bytes of a path
+  string). Next task: that indirect call — either a codegen (mir2lir) mislower
+  of btree do_merge or another reloc/class-of-data mixup.
 
 Verification (2026-10-09, HEAD 68a42f8):
 - `cargo test --workspace` — 173 tests green.

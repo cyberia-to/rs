@@ -13,6 +13,8 @@ mod arm64_reloc {
     pub const GOT_LOAD_PAGE21: u8 = 5;
     pub const GOT_LOAD_PAGEOFF12: u8 = 6;
     pub const POINTER_TO_GOT: u8 = 7;
+    pub const TLVP_LOAD_PAGE21: u8 = 8;
+    pub const TLVP_LOAD_PAGEOFF12: u8 = 9;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,6 +27,13 @@ pub enum RelocKind {
     GotPageOff12,
     PtrToGot,
     Subtractor,
+    /// ARM64_RELOC_TLV_LOAD_PAGE21 — ADRP of a TLV descriptor address.
+    TlvPage21,
+    /// ARM64_RELOC_TLV_LOAD_PAGEOFF12 — page offset of a TLV descriptor.
+    /// The instruction is `ldr Xt, [Xn, #off]` in the .o; when the descriptor
+    /// is defined locally (always true for rlib TLS), ld64 rewrites it to
+    /// `add Xt, Xn, #off` since the descriptor address is known at link time.
+    TlvPageOff12,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +192,13 @@ fn parse_sections(file: &object::File<'_>, raw: &[u8]) -> Result<Vec<SecData>, S
 }
 
 fn sec_flags(_file: &object::File<'_>, sec: &object::Section<'_, '_>) -> u32 {
+    // Preserve the Mach-O section type bits (SECTION_TYPE mask). This keeps
+    // S_ZEROFILL, S_CSTRING_LITERALS and — load-bearing for thread-local
+    // storage — S_THREAD_LOCAL_* (0x11–0x15) intact through layout and emit;
+    // dyld only processes TLV descriptor sections it can recognize by type.
+    if let object::SectionFlags::MachO { flags } = sec.flags() {
+        return flags & 0xFF;
+    }
     use object::SectionKind;
     match sec.kind() {
         SectionKind::ReadOnlyString => 0x02,    // S_CSTRING_LITERALS
@@ -218,6 +234,12 @@ fn parse_relocs(
             arm64_reloc::GOT_LOAD_PAGE21 => RelocKind::GotPage21,
             arm64_reloc::GOT_LOAD_PAGEOFF12 => RelocKind::GotPageOff12,
             arm64_reloc::POINTER_TO_GOT => RelocKind::PtrToGot,
+            // TLV descriptor addressing (ARM64_RELOC_TLV_LOAD_*): same target
+            // arithmetic as PAGE21/PAGEOFF12 against the descriptor symbol in
+            // __DATA,__thread_vars, but the PAGEOFF12 site is an LDR that the
+            // linker must rewrite to ADD when the descriptor is local.
+            arm64_reloc::TLVP_LOAD_PAGE21 => RelocKind::TlvPage21,
+            arm64_reloc::TLVP_LOAD_PAGEOFF12 => RelocKind::TlvPageOff12,
             other => {
                 eprintln!(
                     "warning: unhandled ARM64 reloc type {} at {offset:#x}, skipping",

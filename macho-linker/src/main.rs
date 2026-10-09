@@ -10,6 +10,7 @@ mod input;
 mod layout;
 mod reloc;
 mod resolve;
+mod tlv;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -301,6 +302,9 @@ fn link(args: Args) -> Result<(), String> {
     // ---- Step 5: Apply relocations ----
     reloc::apply_all(&objects, &mut layout, &syms)?;
 
+    // ---- Step 5b: Finalize TLV descriptors (needs resolved $tlv$init addrs) ----
+    let has_tlv = tlv::finalize_tlv(&mut layout, &objects)?;
+
     // ---- Step 6: Emit ----
     let binary = emit::emit(&emit::EmitArgs {
         layout: &layout,
@@ -308,6 +312,7 @@ fn link(args: Args) -> Result<(), String> {
         imports: &imports,
         dylibs: &args.dylibs,
         entry_symbol: &args.entry,
+        has_tlv,
     });
 
     // ---- Step 6: Write output ----

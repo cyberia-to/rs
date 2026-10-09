@@ -18,6 +18,8 @@ const MH_DYLDLINK: u32        = 0x4;
 const MH_PIE: u32             = 0x0020_0000;
 const MH_TWOLEVEL: u32        = 0x80;
 const MH_NOUNDEFS: u32        = 0x1;
+/// MH_HAS_TLV_DESCRIPTORS: __DATA,__thread_vars present; dyld runs TLV setup.
+const MH_HAS_TLV_DESCRIPTORS: u32 = 0x0080_0000;
 
 const LC_SEGMENT_64: u32          = 0x19;
 const LC_BUILD_VERSION: u32       = 0x32;
@@ -90,6 +92,8 @@ pub struct EmitArgs<'a> {
     pub syms: &'a SymbolTable,
     pub imports: &'a [String],      // dylib import names
     pub dylibs: &'a [String],       // dylib paths
+    /// True when TLV descriptors were finalized — sets MH_HAS_TLV_DESCRIPTORS.
+    pub has_tlv: bool,
     pub entry_symbol: &'a str,
 }
 
@@ -227,10 +231,12 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(capacity);
 
     // Mach-O header
+    let mh_flags = MH_NOUNDEFS | MH_DYLDLINK | MH_PIE | MH_TWOLEVEL
+        | if args.has_tlv { MH_HAS_TLV_DESCRIPTORS } else { 0 };
     out.extend_from_slice(unsafe { as_bytes(&MachHeader64 {
         magic: MH_MAGIC_64, cputype: CPU_TYPE_ARM64, cpusubtype: CPU_SUBTYPE_ARM64_ALL,
         filetype: MH_EXECUTE, ncmds: ncmds as u32, sizeofcmds: sizeofcmds as u32,
-        flags: MH_NOUNDEFS | MH_DYLDLINK | MH_PIE | MH_TWOLEVEL, reserved: 0,
+        flags: mh_flags, reserved: 0,
     })});
 
     // LC_SEGMENT_64 __PAGEZERO
@@ -278,7 +284,7 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
             // For BSS (S_ZEROFILL) sections, data is empty but virtual_size
             // holds the actual zero-fill extent.  The file offset must be 0
             // for zerofill sections (the Mach-O ABI requirement).
-            let is_zerofill = ms.flags == 0x01;
+            let is_zerofill = matches!(ms.flags & 0xFF, 0x01 | 0x12);
             out.extend_from_slice(unsafe { as_bytes(&Section64 {
                 sectname: name16(&ms.name), segname: name16("__DATA"),
                 addr: ms.vm_addr, size: ms.virtual_size as u64,

@@ -172,6 +172,53 @@ fn apply_one(
             data[byte_off..byte_off + 4].copy_from_slice(&patched.to_le_bytes());
         }
 
+        RelocKind::TlvPage21 => {
+            // Identical arithmetic to Page21: ADRP of the descriptor's page.
+            if byte_off + 4 > data.len() {
+                return Err(format!("TlvPage21 reloc at {byte_off:#x} out of range"));
+            }
+            let insn = u32::from_le_bytes(data[byte_off..byte_off + 4].try_into().unwrap());
+            let pc_page = (pc & !0xFFF) as i64;
+            let target_page = (target_addr & !0xFFF) as i64;
+            let page_delta = ((target_page - pc_page) >> 12) as i32;
+            if page_delta < -(1 << 20) || page_delta >= (1 << 20) {
+                return Err(format!("TlvPage21 ADRP out of range: {page_delta}"));
+            }
+            let patched = arm64::patch_adrp(insn, page_delta);
+            data[byte_off..byte_off + 4].copy_from_slice(&patched.to_le_bytes());
+        }
+
+        RelocKind::TlvPageOff12 => {
+            if byte_off + 4 > data.len() {
+                return Err(format!("TlvPageOff12 reloc at {byte_off:#x} out of range"));
+            }
+            let insn = u32::from_le_bytes(data[byte_off..byte_off + 4].try_into().unwrap());
+            // The .o encodes `ldr Xt, [Xn, #off]`. The TLV symbol names the
+            // descriptor in __DATA,__thread_vars; with a locally defined
+            // descriptor there is no pointer slot to load — rewrite to
+            // `add Xt, Xn, #pageoff`, matching ld64. An imported (dylib)
+            // descriptor would need a synthesized pointer slot; not needed
+            // for rlib TLS and rejected loudly here.
+            if let RelocTarget::Symbol(name) = &r.target {
+                if let Some(gs) = syms.syms.get(name.as_str()) {
+                    if matches!(gs.kind, crate::resolve::SymKind::DylibImport { .. }) {
+                        return Err(format!(
+                            "TlvPageOff12: imported TLV descriptor '{name}' is not supported"
+                        ));
+                    }
+                }
+            }
+            if !arm64::is_ldr64_imm(insn) {
+                return Err(format!(
+                    "TlvPageOff12 reloc at {byte_off:#x} is not a 64-bit LDR: {insn:#x}"
+                ));
+            }
+            let add_insn = arm64::ldr64_to_add(insn);
+            let page_offset = (target_addr & 0xFFF) as u32;
+            let patched = arm64::patch_add_pageoff(add_insn, page_offset);
+            data[byte_off..byte_off + 4].copy_from_slice(&patched.to_le_bytes());
+        }
+
         RelocKind::Unsigned => {
             let value = target_addr as i64 + r.addend;
             if r.size_bits == 64 {

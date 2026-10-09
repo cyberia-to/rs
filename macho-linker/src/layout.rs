@@ -24,7 +24,7 @@ pub struct MergedSection {
     /// equals data.len().  For S_ZEROFILL (BSS) sections, data is empty but
     /// virtual_size tracks how much zero-fill space must be reserved in VM.
     pub virtual_size: usize,
-    pub align: u32,       // log2 alignment
+    pub align: u32, // log2 alignment
     pub flags: u32,
     pub vm_addr: u64,
     pub file_offset: usize,
@@ -69,11 +69,7 @@ pub struct Layout {
     pub linkedit_vmaddr: u64,
 }
 
-pub fn perform(
-    objects: &[ObjData],
-    syms: &mut SymbolTable,
-    n_imports: usize,
-) -> Layout {
+pub fn perform(objects: &[ObjData], syms: &mut SymbolTable, n_imports: usize) -> Layout {
     // ---- Step 1: merge sections from all objects ----
     let mut sec_map: HashMap<String, usize> = HashMap::new();
     let mut merged: Vec<MergedSection> = Vec::new();
@@ -81,7 +77,18 @@ pub fn perform(
 
     for (obj_idx, obj) in objects.iter().enumerate() {
         for (sec_idx, sec) in obj.sections.iter().enumerate() {
-            let is_zerofill = sec.flags == 0x01; // S_ZEROFILL
+            let is_zerofill = matches!(sec.flags & 0xFF, 0x01 | 0x12); // S_ZEROFILL | S_THREAD_LOCAL_ZEROFILL
+                                                                       // TLV descriptor sections (S_THREAD_LOCAL_VARIABLES) contain
+                                                                       // pointer triples accessed via LDR with a scaled immediate, so
+                                                                       // the section must be at least 8-aligned in the output even when
+                                                                       // the input section claims 1-byte alignment (LLVM emits align 0).
+                                                                       // ld64 does the same; without it the PAGEOFF12 patch truncates
+                                                                       // descriptor addresses to a lower 8-aligned slot.
+            let sec_align = if sec.flags & 0xFF == 0x13 {
+                sec.align.max(3)
+            } else {
+                sec.align
+            };
             let key = format!("{}:{}", sec.seg, sec.name);
             let merged_idx = if let Some(&i) = sec_map.get(&key) {
                 i
@@ -93,7 +100,7 @@ pub fn perform(
                     name: sec.name.clone(),
                     data: Vec::new(),
                     virtual_size: 0,
-                    align: sec.align,
+                    align: sec_align,
                     flags: sec.flags,
                     vm_addr: 0,
                     file_offset: 0,
@@ -103,7 +110,7 @@ pub fn perform(
             };
             let ms = &mut merged[merged_idx];
             // Compute the alignment-padded offset within the merged section.
-            let align_bytes = 1usize << sec.align;
+            let align_bytes = 1usize << sec_align;
             let offset_in_merged = if is_zerofill {
                 // BSS: track virtual_size but keep data empty.
                 let pad = align_bytes - (ms.virtual_size % align_bytes);
@@ -120,8 +127,12 @@ pub fn perform(
                 ms.virtual_size = ms.data.len();
                 off
             };
-            ms.align = ms.align.max(sec.align);
-            ms.chunks.push(Chunk { obj_idx, sec_idx, offset_in_merged });
+            ms.align = ms.align.max(sec_align);
+            ms.chunks.push(Chunk {
+                obj_idx,
+                sec_idx,
+                offset_in_merged,
+            });
             obj_sec_map.insert((obj_idx, sec_idx), (merged_idx, offset_in_merged));
         }
     }
@@ -136,13 +147,20 @@ pub fn perform(
         let i = merged.len();
         sec_map.insert(key, i);
         merged.push(MergedSection {
-            seg: "__TEXT".into(), name: "__stubs".into(),
-            data: stubs_data, virtual_size: stubs_len, align: 2,
+            seg: "__TEXT".into(),
+            name: "__stubs".into(),
+            data: stubs_data,
+            virtual_size: stubs_len,
+            align: 2,
             flags: 0x8000_0408, // S_SYMBOL_STUBS | PURE_INSTRUCTIONS | SOME_INSTRUCTIONS
-            vm_addr: 0, file_offset: 0, chunks: Vec::new(),
+            vm_addr: 0,
+            file_offset: 0,
+            chunks: Vec::new(),
         });
         Some(i)
-    } else { None };
+    } else {
+        None
+    };
 
     // __DATA,__got (if needed)
     let got_idx = if n_imports > 0 {
@@ -152,13 +170,20 @@ pub fn perform(
         let i = merged.len();
         sec_map.insert(key, i);
         merged.push(MergedSection {
-            seg: "__DATA".into(), name: "__got".into(),
-            data: got_data, virtual_size: got_len, align: 3,
+            seg: "__DATA".into(),
+            name: "__got".into(),
+            data: got_data,
+            virtual_size: got_len,
+            align: 3,
             flags: 0x0000_0006, // S_NON_LAZY_SYMBOL_POINTERS
-            vm_addr: 0, file_offset: 0, chunks: Vec::new(),
+            vm_addr: 0,
+            file_offset: 0,
+            chunks: Vec::new(),
         });
         Some(i)
-    } else { None };
+    } else {
+        None
+    };
 
     // ---- Step 3: sort sections into TEXT, DATA, LINKEDIT order ----
     // We need __TEXT,__text first (entry point), then other __TEXT, then __DATA.
@@ -178,17 +203,34 @@ pub fn perform(
             ("__TEXT", "__const") => 4,
             ("__DATA", "__got") => 0,
             ("__DATA", "__data") => 1,
-            ("__DATA", "__bss") => 2,
-            ("__DATA", "__common") => 3,
+            ("__DATA", "__const") => 2,
+            ("__DATA", "__thread_vars") => 3,
+            // The TLV template sections (__thread_data + __thread_bss) must be
+            // adjacent in VM: dyld computes the initial-content span by
+            // accumulating contiguous S_THREAD_LOCAL_* sections.
+            ("__DATA", "__thread_data") => 4,
+            ("__DATA", "__thread_bss") => 5,
+            ("__DATA", "__bss") => 6,
+            ("__DATA", "__common") => 7,
             _ => 10,
         }
     };
 
     // Build a sort key for each section.
+    // Within a segment, all file-backed sections must precede zerofill
+    // (S_ZEROFILL / S_THREAD_LOCAL_ZEROFILL) sections: dyld maps a segment's
+    // file range onto its VM range 1:1, so any file-backed section placed
+    // after a zerofill section would have its content shifted by the
+    // zerofill's VM-only extent (vm/file divergence).
+    let is_zerofill_sec = |ms: &MergedSection| -> bool { matches!(ms.flags & 0xFF, 0x01 | 0x12) };
     let mut order: Vec<usize> = (0..merged.len()).collect();
     order.sort_by_key(|&i| {
         let ms = &merged[i];
-        (seg_priority(&ms.seg), sec_priority(&ms.seg, &ms.name))
+        (
+            seg_priority(&ms.seg),
+            is_zerofill_sec(ms) as u8,
+            sec_priority(&ms.seg, &ms.name),
+        )
     });
 
     // Re-index sec_map and merged after sorting.
@@ -198,8 +240,15 @@ pub fn perform(
         new_idx[old_i] = new_i;
         // We take ownership by swapping with a dummy.
         let dummy = MergedSection {
-            seg: String::new(), name: String::new(), data: Vec::new(),
-            virtual_size: 0, align: 0, flags: 0, vm_addr: 0, file_offset: 0, chunks: Vec::new(),
+            seg: String::new(),
+            name: String::new(),
+            data: Vec::new(),
+            virtual_size: 0,
+            align: 0,
+            flags: 0,
+            vm_addr: 0,
+            file_offset: 0,
+            chunks: Vec::new(),
         };
         sorted_merged.push(std::mem::replace(&mut merged[old_i], dummy));
     }
@@ -227,7 +276,10 @@ pub fn perform(
 
     let header_size = compute_header_size(
         merged.iter().filter(|m| m.seg == "__TEXT").count(),
-        merged.iter().filter(|m| m.seg == "__DATA" || m.seg == "__DATA_CONST").count(),
+        merged
+            .iter()
+            .filter(|m| m.seg == "__DATA" || m.seg == "__DATA_CONST")
+            .count(),
     );
 
     let code_file_offset = align_up(header_size, 16);
@@ -260,7 +312,8 @@ pub fn perform(
                     data_vmaddr = vm_cursor;
                 }
             } else if (prev_seg == "__DATA" || prev_seg == "__DATA_CONST")
-                && seg != "__DATA" && seg != "__DATA_CONST"
+                && seg != "__DATA"
+                && seg != "__DATA_CONST"
             {
                 file_cursor = paged;
                 vm_cursor = paged_vm;
@@ -300,7 +353,12 @@ pub fn perform(
 
     // ---- Step 5: update symbol addresses ----
     for sym in syms.syms.values_mut() {
-        if let SymKind::Defined { obj_idx, sec_idx, offset } = sym.kind {
+        if let SymKind::Defined {
+            obj_idx,
+            sec_idx,
+            offset,
+        } = sym.kind
+        {
             if let Some(&(merged_idx, chunk_off)) = obj_sec_map2.get(&(obj_idx, sec_idx)) {
                 sym.addr = merged[merged_idx].vm_addr + chunk_off as u64 + offset;
             }
@@ -313,7 +371,7 @@ pub fn perform(
 
     if let (Some(s_idx), Some(g_idx)) = (stubs_idx, got_idx) {
         let stubs_base = merged[s_idx].vm_addr;
-        let got_base   = merged[g_idx].vm_addr;
+        let got_base = merged[g_idx].vm_addr;
         for i in 0..n_imports {
             stub_addrs.push(stubs_base + (i * STUB_SIZE) as u64);
             got_addrs.push(got_base + (i * GOT_ENTRY_SIZE) as u64);
@@ -331,7 +389,7 @@ pub fn perform(
         let stubs_base = merged[s_idx].vm_addr;
         for i in 0..n_imports {
             let stub_va = stubs_base + (i * STUB_SIZE) as u64;
-            let got_va  = got_addrs[i];
+            let got_va = got_addrs[i];
             let stub_bytes = encode_stub(stub_va, got_va);
             let off = i * STUB_SIZE;
             merged[s_idx].data[off..off + STUB_SIZE].copy_from_slice(&stub_bytes);
@@ -364,7 +422,7 @@ pub fn perform(
 }
 
 fn encode_stub(stub_va: u64, got_va: u64) -> [u8; 12] {
-    use crate::arm64::{ldr64_unsigned, br, patch_adrp};
+    use crate::arm64::{br, ldr64_unsigned, patch_adrp};
     let pc_page = (stub_va & !0xFFF) as i64;
     let got_page = (got_va & !0xFFF) as i64;
     let page_delta = ((got_page - pc_page) >> 12) as i32;
@@ -389,7 +447,7 @@ fn compute_header_size(n_text_secs: usize, n_data_secs: usize) -> usize {
     const SEG: usize = 72;
     const SEC: usize = 80;
     const LDS: usize = 16; // LinkeditDataCommand
-    // __PAGEZERO + __TEXT + sections + __DATA + sections + __LINKEDIT + fixed LCs
+                           // __PAGEZERO + __TEXT + sections + __DATA + sections + __LINKEDIT + fixed LCs
     HEADER
         + SEG          // __PAGEZERO
         + SEG + n_text_secs * SEC  // __TEXT
@@ -404,7 +462,7 @@ fn compute_header_size(n_text_secs: usize, n_data_secs: usize) -> usize {
         + 24           // LC_MAIN
         + 56           // LC_LOAD_DYLIB libSystem
         + LDS          // LC_CODE_SIGNATURE
-        + 256          // headroom for dylib list growth
+        + 256 // headroom for dylib list growth
 }
 
 #[inline]

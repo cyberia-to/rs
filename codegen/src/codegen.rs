@@ -248,6 +248,13 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         let mut lowerer = MirToLir::new(tcx, instance);
         match lowerer.lower(body, instance) {
             Ok(ops) => {
+                if std::env::var("TRIDENT_DEBUG_LIR").is_ok() {
+                    let name = tcx.symbol_name(instance).name.to_string();
+                    let short = name.trim_start_matches('_');
+                    for op in &ops {
+                        eprintln!("LIR[{short}]: {op:?}");
+                    }
+                }
                 all_ops.extend(ops);
                 all_statics.extend(lowerer.take_statics());
                 all_static_relocs.extend(lowerer.take_static_relocs());

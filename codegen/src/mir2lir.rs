@@ -49,6 +49,13 @@ pub struct MirToLir<'tcx> {
     /// so the caller's crate must emit the body. Collected here, lowered by
     /// codegen_crate in a fixpoint worklist.
     extra_instances: Vec<Instance<'tcx>>,
+    /// Static symbol backing each memory-backed local (arg spill / composite).
+    mem_ptr_sym: HashMap<mir::Local, String>,
+    /// Block index where the local's pointer register was (re)materialized.
+    /// u32::MAX marks a fixed pointer (never rematerialized).
+    mem_ptr_def_bb: HashMap<mir::Local, u32>,
+    /// Index of the basic block currently being lowered.
+    cur_bb: u32,
 }
 
 impl<'tcx> MirToLir<'tcx> {
@@ -65,6 +72,9 @@ impl<'tcx> MirToLir<'tcx> {
             tls_vars: HashMap::new(),
             agg_counter: 0,
             extra_instances: Vec::new(),
+            mem_ptr_sym: HashMap::new(),
+            mem_ptr_def_bb: HashMap::new(),
+            cur_bb: 0,
         }
     }
 
@@ -89,6 +99,25 @@ impl<'tcx> MirToLir<'tcx> {
 
     fn local_reg(&mut self, local: mir::Local) -> Reg {
         if let Some(&r) = self.locals.get(&local) {
+            // Memory-backed locals hold their address in a register that is
+            // defined where the backing static was materialized. Using it from
+            // another basic block reads an undefined register — emit a fresh
+            // LoadAddr in the current block instead.
+            if self.mem_locals.contains(&local) {
+                let def_bb = self.mem_ptr_def_bb.get(&local).copied().unwrap_or(0);
+                if def_bb != u32::MAX && def_bb != self.cur_bb {
+                    if let Some(sym) = self.mem_ptr_sym.get(&local).cloned() {
+                        let r2 = self.alloc_reg();
+                        self.ops.push(LIROp::LoadAddr {
+                            dst: r2,
+                            symbol: sym,
+                        });
+                        self.locals.insert(local, r2);
+                        self.mem_ptr_def_bb.insert(local, self.cur_bb);
+                        return r2;
+                    }
+                }
+            }
             return r;
         }
         let r = self.alloc_reg();
@@ -159,7 +188,7 @@ impl<'tcx> MirToLir<'tcx> {
                 let ptr_reg = self.alloc_reg();
                 self.ops.push(LIROp::LoadAddr {
                     dst: ptr_reg,
-                    symbol: spill_sym,
+                    symbol: spill_sym.clone(),
                 });
                 // Store each argument register slot into the spill area.
                 for slot in 0..slots {
@@ -175,6 +204,8 @@ impl<'tcx> MirToLir<'tcx> {
                 self.locals.insert(local, ptr_reg);
                 // Mark as memory-backed so lower_place treats it as Mem.
                 self.mem_locals.insert(local);
+                self.mem_ptr_sym.insert(local, spill_sym);
+                self.mem_ptr_def_bb.insert(local, self.cur_bb);
             } else {
                 self.locals.insert(local, Reg(reg_slot));
             }
@@ -183,6 +214,7 @@ impl<'tcx> MirToLir<'tcx> {
         self.locals.insert(mir::Local::from_usize(0), Reg(0));
 
         for (bb_idx, bb_data) in body.basic_blocks.iter_enumerated() {
+            self.cur_bb = bb_idx.index() as u32;
             self.ops
                 .push(LIROp::LabelDef(Label::new(format!("bb{}", bb_idx.index()))));
             for stmt in &bb_data.statements {
@@ -211,9 +243,14 @@ impl<'tcx> MirToLir<'tcx> {
                     let place_ty = self.mono_ty(place.ty(&body.local_decls, self.tcx).ty);
                     if self.type_size(place_ty) > 8 && self.is_composite_type(place_ty) {
                         let local = place.local;
-                        let ptr_reg = self.lower_composite_aggregate(rvalue, place_ty, body)?;
+                        let (ptr_reg, actual_sym) =
+                            self.lower_composite_aggregate(rvalue, place_ty, body)?;
                         self.locals.insert(local, ptr_reg);
                         self.mem_locals.insert(local);
+                        // Record the backing symbol so local_reg can rematerialize
+                        // the pointer in basic blocks the LoadAddr doesn't reach.
+                        self.mem_ptr_sym.insert(local, actual_sym);
+                        self.mem_ptr_def_bb.insert(local, self.cur_bb);
                         return Ok(());
                     }
                 }
@@ -263,14 +300,14 @@ impl<'tcx> MirToLir<'tcx> {
 
     /// Materialize a composite rvalue (enum or struct larger than 8 bytes) into a
     /// freshly allocated writable BSS static.  Returns the register holding the
-    /// pointer to that static.  The caller is responsible for marking the target
-    /// local as a mem_local.
+    /// pointer to that static and the static's symbol.  The caller is responsible
+    /// for marking the target local as a mem_local.
     fn lower_composite_aggregate(
         &mut self,
         rvalue: &mir::Rvalue<'tcx>,
         place_ty: ty::Ty<'tcx>,
         body: &mir::Body<'tcx>,
-    ) -> Result<Reg, String> {
+    ) -> Result<(Reg, String), String> {
         let size = self.type_size(place_ty) as usize;
         let sym = format!("__cagg_{}", self.agg_counter);
         self.agg_counter += 1;
@@ -282,7 +319,7 @@ impl<'tcx> MirToLir<'tcx> {
         let ptr = self.alloc_reg();
         self.ops.push(LIROp::LoadAddr {
             dst: ptr,
-            symbol: sym,
+            symbol: sym.clone(),
         });
 
         match rvalue {
@@ -363,7 +400,7 @@ impl<'tcx> MirToLir<'tcx> {
                 });
             }
         }
-        Ok(ptr)
+        Ok((ptr, sym))
     }
 
     // ── Place lowering ─────────────────────────────────────────────────────

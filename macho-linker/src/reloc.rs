@@ -220,12 +220,33 @@ fn apply_one(
         }
 
         RelocKind::Unsigned => {
-            let value = target_addr as i64 + r.addend;
+            // target_addr already includes the addend (resolve_target adds it).
+            let value = target_addr;
             if r.size_bits == 64 {
                 if byte_off + 8 > data.len() {
                     return Err(format!("Unsigned64 reloc at {byte_off:#x} out of range"));
                 }
                 data[byte_off..byte_off + 8].copy_from_slice(&(value as u64).to_le_bytes());
+                // A 64-bit slot holding an absolute LOCAL address is a rebase
+                // fixup: dyld must add the slide at load, else internal
+                // pointers (vtables, fn-ptr statics) break under ASLR.
+                // Imports bind via GOT/stubs, and TLV descriptors are owned by
+                // dyld's TLV setup — neither is rebased here.
+                if let RelocTarget::Symbol(name) = &r.target {
+                    if let Some(gs) = syms.syms.get(name.as_str()) {
+                        if matches!(gs.kind, crate::resolve::SymKind::Defined { .. }) {
+                            let slot_vm = layout.merged[merged_idx].vm_addr + byte_off as u64;
+                            if layout.merged[merged_idx].seg != "__DATA"
+                                || layout.merged[merged_idx].name != "__thread_vars"
+                            {
+                                layout.fixup_slots.push(crate::dyld::FixupSlot::Rebase {
+                                    vm_addr: slot_vm,
+                                    target: value as u64,
+                                });
+                            }
+                        }
+                    }
+                }
             } else {
                 if byte_off + 4 > data.len() {
                     return Err(format!("Unsigned32 reloc at {byte_off:#x} out of range"));

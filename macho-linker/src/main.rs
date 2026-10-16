@@ -308,18 +308,38 @@ fn link(args: Args) -> Result<(), String> {
     let has_tlv = tlv::finalize_tlv(&mut layout, &objects)?;
 
     // ---- Step 5c: Fill local GOT slots with their symbols' absolute
-    // addresses (imports stay zero — dyld binds them via the fixup chain) ----
+    // addresses (imports stay zero — dyld binds them via the fixup chain).
+    // Every GOT slot becomes a fixup entry: imports Bind, locals Rebase.
     if let Some(g_idx) = layout.got_idx {
         for (pos, name) in syms.local_gots.iter().enumerate() {
             if let Some(gs) = syms.syms.get(name) {
                 let idx = n_imports + pos;
                 let off = idx * 8;
                 layout.merged[g_idx].data[off..off + 8].copy_from_slice(&gs.addr.to_le_bytes());
+                let slot_vm = layout.merged[g_idx].vm_addr + off as u64;
+                layout.fixup_slots.push(dyld::FixupSlot::Rebase {
+                    vm_addr: slot_vm,
+                    target: gs.addr,
+                });
             }
+        }
+        for (ordinal, _) in imports.iter().enumerate() {
+            let off = ordinal * 8;
+            let slot_vm = layout.merged[g_idx].vm_addr + off as u64;
+            layout.fixup_slots.push(dyld::FixupSlot::Bind {
+                vm_addr: slot_vm,
+                ordinal,
+            });
         }
     }
 
     // ---- Step 6: Emit ----
+    // De-duplicate slots by vm address once, so the blob chains and the
+    // on-disk entries cover exactly the same slot set.
+    {
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        layout.fixup_slots.retain(|s| seen.insert(s.vm_addr()));
+    }
     let binary = emit::emit(&emit::EmitArgs {
         layout: &layout,
         syms: &syms,

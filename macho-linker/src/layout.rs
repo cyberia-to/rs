@@ -41,6 +41,19 @@ pub struct Chunk {
 }
 
 /// Output layout: merged sections + assigned addresses.
+/// A fixup-chain slot: either a dylib bind (import ordinal) or a rebase of a
+/// statically-linked absolute pointer (vtable entry, fn-ptr static, local GOT).
+/// dyld applies slide to rebase targets at load; without these, internal
+/// pointers are wrong under ASLR.
+#[derive(Debug, Clone)]
+pub enum FixupSlot {
+    /// 64-bit slot holding a chained-bind entry for import `ordinal`.
+    Bind { vm_addr: u64, ordinal: usize },
+    /// 64-bit slot holding a chained-rebase entry for a local `target` vmaddr
+    /// (preferred base, pre-slide).
+    Rebase { vm_addr: u64, target: u64 },
+}
+
 pub struct Layout {
     pub merged: Vec<MergedSection>,
     /// Index of __TEXT,__text in merged.
@@ -57,6 +70,9 @@ pub struct Layout {
     pub stub_addrs: Vec<u64>,
     /// Addresses of each GOT entry.
     pub got_addrs: Vec<u64>,
+    /// All fixup-chain slots (binds + rebases), filled during relocation
+    /// application and consumed by dyld::build/emit.
+    pub fixup_slots: Vec<crate::dyld::FixupSlot>,
     /// File size of __TEXT segment (for code signing execSegLimit).
     pub text_filesize: usize,
     /// File offset of __DATA segment start (for dyld chained fixups).
@@ -130,16 +146,6 @@ pub fn perform(
                     if sym.is_defined && sym.section_idx == Some(sec_idx) {
                         extent = extent.max(sym.offset + 8);
                     }
-                }
-                if std::env::var_os("MACHO_LINK_DEBUG").is_some() {
-                    eprintln!(
-                        "DBG bss chunk obj={} sec={} declared={:#x} extent={:#x} nsyms={}",
-                        obj_idx,
-                        sec_idx,
-                        sec.virtual_size,
-                        extent,
-                        obj.symbols.len()
-                    );
                 }
                 ms.virtual_size = off + extent as usize;
                 off
@@ -391,16 +397,6 @@ pub fn perform(
     }
 
     // Assign stub addresses and update DylibImport entries.
-    if std::env::var_os("MACHO_LINK_DEBUG").is_some() {
-        for (name, sym) in &syms.syms {
-            if name.contains("4lock4LOCK") || name.contains("MergedGlobals") {
-                eprintln!(
-                    "DBG sym(after) {name} = {:#x} kind={:?}",
-                    sym.addr, sym.kind
-                );
-            }
-        }
-    }
     let mut stub_addrs: Vec<u64> = Vec::new();
     let mut got_addrs: Vec<u64> = Vec::new();
 
@@ -452,6 +448,7 @@ pub fn perform(
         obj_sec_map: obj_sec_map2,
         stub_addrs,
         got_addrs,
+        fixup_slots: Vec::new(),
         text_filesize: text_filesize_real,
         data_fileoff: data_start_fileoff,
         data_vmaddr,

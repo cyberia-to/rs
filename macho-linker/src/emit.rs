@@ -1,7 +1,7 @@
 //! Assemble the final Mach-O MH_EXECUTE binary from the laid-out sections.
 
-use std::mem;
 use link::sign;
+use std::mem;
 
 use crate::dyld;
 use crate::layout::{Layout, PAGE};
@@ -10,29 +10,29 @@ use crate::resolve::SymbolTable;
 // ---------------------------------------------------------------------------
 // Mach-O constants
 // ---------------------------------------------------------------------------
-const MH_MAGIC_64: u32        = 0xFEED_FACF;
-const CPU_TYPE_ARM64: i32     = 0x0100_000C;
+const MH_MAGIC_64: u32 = 0xFEED_FACF;
+const CPU_TYPE_ARM64: i32 = 0x0100_000C;
 const CPU_SUBTYPE_ARM64_ALL: i32 = 0;
-const MH_EXECUTE: u32         = 2;
-const MH_DYLDLINK: u32        = 0x4;
-const MH_PIE: u32             = 0x0020_0000;
-const MH_TWOLEVEL: u32        = 0x80;
-const MH_NOUNDEFS: u32        = 0x1;
+const MH_EXECUTE: u32 = 2;
+const MH_DYLDLINK: u32 = 0x4;
+const MH_PIE: u32 = 0x0020_0000;
+const MH_TWOLEVEL: u32 = 0x80;
+const MH_NOUNDEFS: u32 = 0x1;
 /// MH_HAS_TLV_DESCRIPTORS: __DATA,__thread_vars present; dyld runs TLV setup.
 const MH_HAS_TLV_DESCRIPTORS: u32 = 0x0080_0000;
 
-const LC_SEGMENT_64: u32          = 0x19;
-const LC_BUILD_VERSION: u32       = 0x32;
-const LC_CODE_SIGNATURE: u32      = 0x1D;
-const LC_LOAD_DYLINKER: u32       = 0xE;
-const LC_MAIN: u32                = 0x8000_0028;
-const LC_LOAD_DYLIB: u32          = 0xC;
-const LC_SYMTAB: u32              = 0x2;
-const LC_DYSYMTAB: u32            = 0xB;
+const LC_SEGMENT_64: u32 = 0x19;
+const LC_BUILD_VERSION: u32 = 0x32;
+const LC_CODE_SIGNATURE: u32 = 0x1D;
+const LC_LOAD_DYLINKER: u32 = 0xE;
+const LC_MAIN: u32 = 0x8000_0028;
+const LC_LOAD_DYLIB: u32 = 0xC;
+const LC_SYMTAB: u32 = 0x2;
+const LC_DYSYMTAB: u32 = 0xB;
 const LC_DYLD_CHAINED_FIXUPS: u32 = 0x8000_0034;
-const LC_DYLD_EXPORTS_TRIE: u32   = 0x8000_0033;
+const LC_DYLD_EXPORTS_TRIE: u32 = 0x8000_0033;
 
-const PROT_R: i32  = 0x01;
+const PROT_R: i32 = 0x01;
 const PROT_RX: i32 = 0x05;
 const PROT_RW: i32 = 0x03;
 const VM_BASE: u64 = 0x1_0000_0000;
@@ -41,32 +41,101 @@ const VM_BASE: u64 = 0x1_0000_0000;
 // On-disk structures
 // ---------------------------------------------------------------------------
 
-#[repr(C, packed)] struct MachHeader64 {
-    magic: u32, cputype: i32, cpusubtype: i32, filetype: u32,
-    ncmds: u32, sizeofcmds: u32, flags: u32, reserved: u32,
+#[repr(C, packed)]
+struct MachHeader64 {
+    magic: u32,
+    cputype: i32,
+    cpusubtype: i32,
+    filetype: u32,
+    ncmds: u32,
+    sizeofcmds: u32,
+    flags: u32,
+    reserved: u32,
 }
-#[repr(C, packed)] struct SegmentCommand64 {
-    cmd: u32, cmdsize: u32, segname: [u8; 16],
-    vmaddr: u64, vmsize: u64, fileoff: u64, filesize: u64,
-    maxprot: i32, initprot: i32, nsects: u32, flags: u32,
+#[repr(C, packed)]
+struct SegmentCommand64 {
+    cmd: u32,
+    cmdsize: u32,
+    segname: [u8; 16],
+    vmaddr: u64,
+    vmsize: u64,
+    fileoff: u64,
+    filesize: u64,
+    maxprot: i32,
+    initprot: i32,
+    nsects: u32,
+    flags: u32,
 }
-#[repr(C, packed)] struct Section64 {
-    sectname: [u8; 16], segname: [u8; 16], addr: u64, size: u64,
-    offset: u32, align: u32, reloff: u32, nreloc: u32, flags: u32,
-    reserved1: u32, reserved2: u32, reserved3: u32,
+#[repr(C, packed)]
+struct Section64 {
+    sectname: [u8; 16],
+    segname: [u8; 16],
+    addr: u64,
+    size: u64,
+    offset: u32,
+    align: u32,
+    reloff: u32,
+    nreloc: u32,
+    flags: u32,
+    reserved1: u32,
+    reserved2: u32,
+    reserved3: u32,
 }
-#[repr(C, packed)] struct LinkeditDataCommand { cmd: u32, cmdsize: u32, dataoff: u32, datasize: u32 }
-#[repr(C, packed)] struct BuildVersionCommand { cmd: u32, cmdsize: u32, platform: u32, minos: u32, sdk: u32, ntools: u32 }
-#[repr(C, packed)] struct SymtabCommand { cmd: u32, cmdsize: u32, symoff: u32, nsyms: u32, stroff: u32, strsize: u32 }
-#[repr(C, packed)] struct DysymtabCommand {
-    cmd: u32, cmdsize: u32,
-    ilocalsym: u32, nlocalsym: u32, iextdefsym: u32, nextdefsym: u32,
-    iundefsym: u32, nundefsym: u32, tocoff: u32, ntoc: u32,
-    modtaboff: u32, nmodtab: u32, extrefsymoff: u32, nextrefsyms: u32,
-    indirectsymoff: u32, nindirectsyms: u32, extreloff: u32, nextrel: u32,
-    locreloff: u32, nlocrel: u32,
+#[repr(C, packed)]
+struct LinkeditDataCommand {
+    cmd: u32,
+    cmdsize: u32,
+    dataoff: u32,
+    datasize: u32,
 }
-#[repr(C, packed)] struct EntryPointCommand { cmd: u32, cmdsize: u32, entryoff: u64, stacksize: u64 }
+#[repr(C, packed)]
+struct BuildVersionCommand {
+    cmd: u32,
+    cmdsize: u32,
+    platform: u32,
+    minos: u32,
+    sdk: u32,
+    ntools: u32,
+}
+#[repr(C, packed)]
+struct SymtabCommand {
+    cmd: u32,
+    cmdsize: u32,
+    symoff: u32,
+    nsyms: u32,
+    stroff: u32,
+    strsize: u32,
+}
+#[repr(C, packed)]
+struct DysymtabCommand {
+    cmd: u32,
+    cmdsize: u32,
+    ilocalsym: u32,
+    nlocalsym: u32,
+    iextdefsym: u32,
+    nextdefsym: u32,
+    iundefsym: u32,
+    nundefsym: u32,
+    tocoff: u32,
+    ntoc: u32,
+    modtaboff: u32,
+    nmodtab: u32,
+    extrefsymoff: u32,
+    nextrefsyms: u32,
+    indirectsymoff: u32,
+    nindirectsyms: u32,
+    extreloff: u32,
+    nextrel: u32,
+    locreloff: u32,
+    nlocrel: u32,
+}
+#[repr(C, packed)]
+struct EntryPointCommand {
+    cmd: u32,
+    cmdsize: u32,
+    entryoff: u64,
+    stacksize: u64,
+}
 
 unsafe fn as_bytes<T>(v: &T) -> &[u8] {
     std::slice::from_raw_parts(v as *const T as *const u8, mem::size_of::<T>())
@@ -79,9 +148,13 @@ fn name16(s: &str) -> [u8; 16] {
     buf
 }
 
-fn push_u32(v: &mut Vec<u8>, x: u32) { v.extend_from_slice(&x.to_le_bytes()); }
+fn push_u32(v: &mut Vec<u8>, x: u32) {
+    v.extend_from_slice(&x.to_le_bytes());
+}
 
-fn align_up(x: usize, a: usize) -> usize { (x + a - 1) & !(a - 1) }
+fn align_up(x: usize, a: usize) -> usize {
+    (x + a - 1) & !(a - 1)
+}
 
 // ---------------------------------------------------------------------------
 // Emitter
@@ -90,8 +163,8 @@ fn align_up(x: usize, a: usize) -> usize { (x + a - 1) & !(a - 1) }
 pub struct EmitArgs<'a> {
     pub layout: &'a Layout,
     pub syms: &'a SymbolTable,
-    pub imports: &'a [String],      // dylib import names
-    pub dylibs: &'a [String],       // dylib paths
+    pub imports: &'a [String], // dylib import names
+    pub dylibs: &'a [String],  // dylib paths
     /// True when TLV descriptors were finalized — sets MH_HAS_TLV_DESCRIPTORS.
     pub has_tlv: bool,
     pub entry_symbol: &'a str,
@@ -102,53 +175,111 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     let imports = args.imports;
 
     // ---- Gather segment/section info ----
-    let text_secs: Vec<_> = layout.merged.iter().enumerate()
+    let text_secs: Vec<_> = layout
+        .merged
+        .iter()
+        .enumerate()
         .filter(|(_, m)| m.seg == "__TEXT")
         .collect();
-    let data_secs: Vec<_> = layout.merged.iter().enumerate()
+    let data_secs: Vec<_> = layout
+        .merged
+        .iter()
+        .enumerate()
         .filter(|(_, m)| m.seg == "__DATA" || m.seg == "__DATA_CONST")
         .collect();
     let has_data = !data_secs.is_empty();
 
-    // ---- Compute GOT file offset for dyld fixups ----
-    let (got_fileoff, got_vm) = layout.got_idx.map(|gi| {
-        (layout.merged[gi].file_offset, layout.merged[gi].vm_addr)
-    }).unwrap_or((layout.linkedit_fileoff, 0));
-
-    // ---- Build dyld chained fixups blob ----
-    let n_data_secs = data_secs.len();
-    let cf = if !imports.is_empty() {
-        dyld::build(imports, got_fileoff, layout.data_fileoff, n_data_secs)
+    // ---- Build dyld chained fixups (binds + rebases) and write chain
+    // entries into every fixup slot, identified by vm address ----
+    let text_vmaddr: u64 = VM_BASE as u64;
+    let text_vmsize: u64 = if has_data {
+        layout.data_fileoff as u64
     } else {
-        dyld::ChainedFixups { blob: make_empty_chained_fixups(), got_page_start: 0 }
+        layout.linkedit_fileoff as u64
     };
+    let data_vmsize: u64 = if layout.data_vmaddr > 0 {
+        layout.linkedit_vmaddr - layout.data_vmaddr
+    } else {
+        0
+    };
+    let cf = dyld::build(
+        &layout.fixup_slots,
+        text_vmaddr,
+        text_vmsize,
+        layout.data_vmaddr,
+        data_vmsize,
+        layout.data_fileoff as u64,
+        imports,
+    );
 
-    // ---- Write GOT bind entries into DATA section ----
     let mut merged_patched: Vec<Vec<u8>> = layout.merged.iter().map(|m| m.data.clone()).collect();
-    if let Some(gi) = layout.got_idx {
-        for (i, _) in imports.iter().enumerate() {
-            let is_last = i + 1 == imports.len();
-            let entry = dyld::got_bind_entry(i, is_last);
-            let off = i * 8;
-            merged_patched[gi][off..off + 8].copy_from_slice(&entry.to_le_bytes());
+    // vm → file offset within its segment (slots only exist in file-backed
+    // ranges, where vm-to-fileoff is a constant per segment).
+    let vm_to_fileoff = |vm: u64| -> Option<usize> {
+        if vm >= text_vmaddr && vm < text_vmaddr + text_vmsize {
+            Some((vm - text_vmaddr) as usize) // __TEXT fileoff base is 0
+        } else if layout.data_vmaddr > 0
+            && vm >= layout.data_vmaddr
+            && vm < layout.data_vmaddr + data_vmsize
+        {
+            Some(layout.data_fileoff + (vm - layout.data_vmaddr) as usize)
+        } else {
+            None
         }
+    };
+    // One chain per page: slots sorted by vm, linked with next=2 (+8 bytes).
+    let mut slots_sorted: Vec<&dyld::FixupSlot> = layout.fixup_slots.iter().collect();
+    slots_sorted.sort_by_key(|s| s.vm_addr());
+    slots_sorted.dedup_by_key(|s| s.vm_addr());
+    let mut i = 0usize;
+    while i < slots_sorted.len() {
+        // Group by the CHAIN page size (16KB on arm64) — chain `next` links
+        // must not cross a page boundary the way a 4K mask would split them.
+        let page_base = slots_sorted[i].vm_addr() & !0x3FFF;
+        let mut j = i;
+        while j < slots_sorted.len() && slots_sorted[j].vm_addr() & !0x3FFF == page_base {
+            j += 1;
+        }
+        let chain = &slots_sorted[i..j];
+        for (k, slot) in chain.iter().enumerate() {
+            // next is the delta to the following slot in FOUR-BYTE units —
+            // slots are 8-aligned but not contiguous (data lives between
+            // them), so a fixed +8 is wrong.
+            let next_units = if k + 1 < chain.len() {
+                ((chain[k + 1].vm_addr() - slot.vm_addr()) / 4) as u16
+            } else {
+                0
+            };
+            let entry = slot.encode(next_units);
+            if let Some(fo) = vm_to_fileoff(slot.vm_addr()) {
+                for (mi, ms) in layout.merged.iter().enumerate() {
+                    let base = ms.file_offset;
+                    if fo >= base && fo + 8 <= base + merged_patched[mi].len() {
+                        let o = fo - base;
+                        merged_patched[mi][o..o + 8].copy_from_slice(&entry.to_le_bytes());
+                        break;
+                    }
+                }
+            }
+        }
+        i = j;
     }
 
     // ---- Compute LINKEDIT layout ----
     let chain_off = layout.linkedit_fileoff;
     let chain_size = cf.blob.len();
-    let trie_off   = chain_off + chain_size;
+    let trie_off = chain_off + chain_size;
     const TRIE_SIZE: usize = 4;
     const STR_SIZE: usize = 1;
     let strtab_off = trie_off + TRIE_SIZE;
     let strtab_end = strtab_off + STR_SIZE;
-    let code_limit  = align_up(strtab_end, 8);
+    let code_limit = align_up(strtab_end, 8);
 
     let identifier = "pure.rs";
-    let sig_off  = code_limit;
+    let sig_off = code_limit;
     let sig_size = sign::signature_size(code_limit, identifier);
     let linkedit_filesize = sig_off + sig_size - layout.linkedit_fileoff;
-    let linkedit_vmsize   = align_up(linkedit_filesize, PAGE) as u64;
+    let linkedit_vmsize = align_up(linkedit_filesize, PAGE) as u64;
 
     // ---- Compute TEXT segment boundaries ----
     let text_vmaddr = VM_BASE;
@@ -162,7 +293,7 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
 
     // ---- Compute DATA segment boundaries ----
     let data_fileoff = layout.data_fileoff as u64;
-    let data_vmaddr  = layout.data_vmaddr;
+    let data_vmaddr = layout.data_vmaddr;
     let data_size = (layout.linkedit_fileoff - layout.data_fileoff) as u64;
 
     // ---- Count load commands ----
@@ -180,10 +311,14 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     // LC_SYMTAB + LC_DYSYMTAB + LC_LOAD_DYLINKER +
     // LC_BUILD_VERSION + LC_MAIN + LC_LOAD_DYLIB(s) + LC_CODE_SIGNATURE
     let n_dylibs = args.dylibs.len().max(1); // at least libSystem
-    let dylib_sizes: Vec<usize> = args.dylibs.iter().map(|p| {
-        let total = p.len() + 1; // null-terminated
-        24 + align_up(total, 8)  // 24-byte header + padded name (8-byte aligned for 64-bit)
-    }).collect();
+    let dylib_sizes: Vec<usize> = args
+        .dylibs
+        .iter()
+        .map(|p| {
+            let total = p.len() + 1; // null-terminated
+            24 + align_up(total, 8) // 24-byte header + padded name (8-byte aligned for 64-bit)
+        })
+        .collect();
     let dylib_total: usize = if args.dylibs.is_empty() {
         56 // libSystem fallback
     } else {
@@ -202,7 +337,7 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
         + 1 // BUILD_VERSION
         + 1 // MAIN
         + n_dylibs // LOAD_DYLIB(s)
-        + 1;// CODE_SIGNATURE
+        + 1; // CODE_SIGNATURE
 
     let sizeofcmds = SEG // PAGEZERO
         + SEG + n_text_secs * SEC
@@ -219,7 +354,10 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     // Try the requested symbol, then common aliases (with/without leading underscore).
     let entry_sym = args.entry_symbol;
     let entry_sym_no_underscore = entry_sym.strip_prefix('_').unwrap_or(entry_sym);
-    let entry_off = args.syms.syms.get(entry_sym)
+    let entry_off = args
+        .syms
+        .syms
+        .get(entry_sym)
         .or_else(|| args.syms.syms.get(entry_sym_no_underscore))
         .or_else(|| args.syms.syms.get("_main"))
         .or_else(|| args.syms.syms.get("main"))
@@ -231,37 +369,78 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(capacity);
 
     // Mach-O header
-    let mh_flags = MH_NOUNDEFS | MH_DYLDLINK | MH_PIE | MH_TWOLEVEL
-        | if args.has_tlv { MH_HAS_TLV_DESCRIPTORS } else { 0 };
-    out.extend_from_slice(unsafe { as_bytes(&MachHeader64 {
-        magic: MH_MAGIC_64, cputype: CPU_TYPE_ARM64, cpusubtype: CPU_SUBTYPE_ARM64_ALL,
-        filetype: MH_EXECUTE, ncmds: ncmds as u32, sizeofcmds: sizeofcmds as u32,
-        flags: mh_flags, reserved: 0,
-    })});
+    let mh_flags = MH_NOUNDEFS
+        | MH_DYLDLINK
+        | MH_PIE
+        | MH_TWOLEVEL
+        | if args.has_tlv {
+            MH_HAS_TLV_DESCRIPTORS
+        } else {
+            0
+        };
+    out.extend_from_slice(unsafe {
+        as_bytes(&MachHeader64 {
+            magic: MH_MAGIC_64,
+            cputype: CPU_TYPE_ARM64,
+            cpusubtype: CPU_SUBTYPE_ARM64_ALL,
+            filetype: MH_EXECUTE,
+            ncmds: ncmds as u32,
+            sizeofcmds: sizeofcmds as u32,
+            flags: mh_flags,
+            reserved: 0,
+        })
+    });
 
     // LC_SEGMENT_64 __PAGEZERO
-    out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-        cmd: LC_SEGMENT_64, cmdsize: SEG as u32, segname: name16("__PAGEZERO"),
-        vmaddr: 0, vmsize: VM_BASE, fileoff: 0, filesize: 0,
-        maxprot: 0, initprot: 0, nsects: 0, flags: 0,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&SegmentCommand64 {
+            cmd: LC_SEGMENT_64,
+            cmdsize: SEG as u32,
+            segname: name16("__PAGEZERO"),
+            vmaddr: 0,
+            vmsize: VM_BASE,
+            fileoff: 0,
+            filesize: 0,
+            maxprot: 0,
+            initprot: 0,
+            nsects: 0,
+            flags: 0,
+        })
+    });
 
     // LC_SEGMENT_64 __TEXT
-    out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-        cmd: LC_SEGMENT_64, cmdsize: (SEG + n_text_secs * SEC) as u32,
-        segname: name16("__TEXT"),
-        vmaddr: text_vmaddr, vmsize: text_vmsize,
-        fileoff: text_fileoff, filesize: text_filesize,
-        maxprot: PROT_RX, initprot: PROT_RX, nsects: n_text_secs as u32, flags: 0,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&SegmentCommand64 {
+            cmd: LC_SEGMENT_64,
+            cmdsize: (SEG + n_text_secs * SEC) as u32,
+            segname: name16("__TEXT"),
+            vmaddr: text_vmaddr,
+            vmsize: text_vmsize,
+            fileoff: text_fileoff,
+            filesize: text_filesize,
+            maxprot: PROT_RX,
+            initprot: PROT_RX,
+            nsects: n_text_secs as u32,
+            flags: 0,
+        })
+    });
     for (_, ms) in &text_secs {
-        out.extend_from_slice(unsafe { as_bytes(&Section64 {
-            sectname: name16(&ms.name), segname: name16("__TEXT"),
-            addr: ms.vm_addr, size: ms.virtual_size as u64,
-            offset: ms.file_offset as u32, align: ms.align,
-            reloff: 0, nreloc: 0, flags: ms.flags,
-            reserved1: 0, reserved2: 0, reserved3: 0,
-        })});
+        out.extend_from_slice(unsafe {
+            as_bytes(&Section64 {
+                sectname: name16(&ms.name),
+                segname: name16("__TEXT"),
+                addr: ms.vm_addr,
+                size: ms.virtual_size as u64,
+                offset: ms.file_offset as u32,
+                align: ms.align,
+                reloff: 0,
+                nreloc: 0,
+                flags: ms.flags,
+                reserved1: 0,
+                reserved2: 0,
+                reserved3: 0,
+            })
+        });
     }
 
     // LC_SEGMENT_64 __DATA (if any)
@@ -273,65 +452,123 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
         data_size
     };
     if has_data {
-        out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-            cmd: LC_SEGMENT_64, cmdsize: (SEG + n_data_secs * SEC) as u32,
-            segname: name16("__DATA"),
-            vmaddr: data_vmaddr, vmsize: data_vmsize,
-            fileoff: data_fileoff, filesize: data_size,
-            maxprot: PROT_RW, initprot: PROT_RW, nsects: n_data_secs as u32, flags: 0,
-        })});
+        out.extend_from_slice(unsafe {
+            as_bytes(&SegmentCommand64 {
+                cmd: LC_SEGMENT_64,
+                cmdsize: (SEG + n_data_secs * SEC) as u32,
+                segname: name16("__DATA"),
+                vmaddr: data_vmaddr,
+                vmsize: data_vmsize,
+                fileoff: data_fileoff,
+                filesize: data_size,
+                maxprot: PROT_RW,
+                initprot: PROT_RW,
+                nsects: n_data_secs as u32,
+                flags: 0,
+            })
+        });
         for (_, ms) in &data_secs {
             // For BSS (S_ZEROFILL) sections, data is empty but virtual_size
             // holds the actual zero-fill extent.  The file offset must be 0
             // for zerofill sections (the Mach-O ABI requirement).
             let is_zerofill = matches!(ms.flags & 0xFF, 0x01 | 0x12);
-            out.extend_from_slice(unsafe { as_bytes(&Section64 {
-                sectname: name16(&ms.name), segname: name16("__DATA"),
-                addr: ms.vm_addr, size: ms.virtual_size as u64,
-                offset: if is_zerofill { 0 } else { ms.file_offset as u32 },
-                align: ms.align,
-                reloff: 0, nreloc: 0, flags: ms.flags,
-                reserved1: 0, reserved2: 0, reserved3: 0,
-            })});
+            out.extend_from_slice(unsafe {
+                as_bytes(&Section64 {
+                    sectname: name16(&ms.name),
+                    segname: name16("__DATA"),
+                    addr: ms.vm_addr,
+                    size: ms.virtual_size as u64,
+                    offset: if is_zerofill {
+                        0
+                    } else {
+                        ms.file_offset as u32
+                    },
+                    align: ms.align,
+                    reloff: 0,
+                    nreloc: 0,
+                    flags: ms.flags,
+                    reserved1: 0,
+                    reserved2: 0,
+                    reserved3: 0,
+                })
+            });
         }
     }
 
     // LC_SEGMENT_64 __LINKEDIT
-    out.extend_from_slice(unsafe { as_bytes(&SegmentCommand64 {
-        cmd: LC_SEGMENT_64, cmdsize: SEG as u32, segname: name16("__LINKEDIT"),
-        vmaddr: layout.linkedit_vmaddr, vmsize: linkedit_vmsize,
-        fileoff: layout.linkedit_fileoff as u64, filesize: linkedit_filesize as u64,
-        maxprot: PROT_R, initprot: PROT_R, nsects: 0, flags: 0,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&SegmentCommand64 {
+            cmd: LC_SEGMENT_64,
+            cmdsize: SEG as u32,
+            segname: name16("__LINKEDIT"),
+            vmaddr: layout.linkedit_vmaddr,
+            vmsize: linkedit_vmsize,
+            fileoff: layout.linkedit_fileoff as u64,
+            filesize: linkedit_filesize as u64,
+            maxprot: PROT_R,
+            initprot: PROT_R,
+            nsects: 0,
+            flags: 0,
+        })
+    });
 
     // LC_DYLD_CHAINED_FIXUPS
-    out.extend_from_slice(unsafe { as_bytes(&LinkeditDataCommand {
-        cmd: LC_DYLD_CHAINED_FIXUPS, cmdsize: LDS as u32,
-        dataoff: chain_off as u32, datasize: chain_size as u32,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&LinkeditDataCommand {
+            cmd: LC_DYLD_CHAINED_FIXUPS,
+            cmdsize: LDS as u32,
+            dataoff: chain_off as u32,
+            datasize: chain_size as u32,
+        })
+    });
 
     // LC_DYLD_EXPORTS_TRIE (empty)
-    out.extend_from_slice(unsafe { as_bytes(&LinkeditDataCommand {
-        cmd: LC_DYLD_EXPORTS_TRIE, cmdsize: LDS as u32,
-        dataoff: trie_off as u32, datasize: TRIE_SIZE as u32,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&LinkeditDataCommand {
+            cmd: LC_DYLD_EXPORTS_TRIE,
+            cmdsize: LDS as u32,
+            dataoff: trie_off as u32,
+            datasize: TRIE_SIZE as u32,
+        })
+    });
 
     // LC_SYMTAB (empty)
-    out.extend_from_slice(unsafe { as_bytes(&SymtabCommand {
-        cmd: LC_SYMTAB, cmdsize: 24,
-        symoff: strtab_off as u32, nsyms: 0,
-        stroff: strtab_off as u32, strsize: STR_SIZE as u32,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&SymtabCommand {
+            cmd: LC_SYMTAB,
+            cmdsize: 24,
+            symoff: strtab_off as u32,
+            nsyms: 0,
+            stroff: strtab_off as u32,
+            strsize: STR_SIZE as u32,
+        })
+    });
 
     // LC_DYSYMTAB (all zeros)
-    out.extend_from_slice(unsafe { as_bytes(&DysymtabCommand {
-        cmd: LC_DYSYMTAB, cmdsize: 80,
-        ilocalsym: 0, nlocalsym: 0, iextdefsym: 0, nextdefsym: 0,
-        iundefsym: 0, nundefsym: 0, tocoff: 0, ntoc: 0,
-        modtaboff: 0, nmodtab: 0, extrefsymoff: 0, nextrefsyms: 0,
-        indirectsymoff: 0, nindirectsyms: 0, extreloff: 0, nextrel: 0,
-        locreloff: 0, nlocrel: 0,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&DysymtabCommand {
+            cmd: LC_DYSYMTAB,
+            cmdsize: 80,
+            ilocalsym: 0,
+            nlocalsym: 0,
+            iextdefsym: 0,
+            nextdefsym: 0,
+            iundefsym: 0,
+            nundefsym: 0,
+            tocoff: 0,
+            ntoc: 0,
+            modtaboff: 0,
+            nmodtab: 0,
+            extrefsymoff: 0,
+            nextrefsyms: 0,
+            indirectsymoff: 0,
+            nindirectsyms: 0,
+            extreloff: 0,
+            nextrel: 0,
+            locreloff: 0,
+            nlocrel: 0,
+        })
+    });
 
     // LC_LOAD_DYLINKER
     push_u32(&mut out, LC_LOAD_DYLINKER);
@@ -341,15 +578,26 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     out.extend_from_slice(&[0u8; 6]);
 
     // LC_BUILD_VERSION (macOS 15.0)
-    out.extend_from_slice(unsafe { as_bytes(&BuildVersionCommand {
-        cmd: LC_BUILD_VERSION, cmdsize: 24, platform: 1,
-        minos: 0x000F_0000, sdk: 0x000F_0000, ntools: 0,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&BuildVersionCommand {
+            cmd: LC_BUILD_VERSION,
+            cmdsize: 24,
+            platform: 1,
+            minos: 0x000F_0000,
+            sdk: 0x000F_0000,
+            ntools: 0,
+        })
+    });
 
     // LC_MAIN
-    out.extend_from_slice(unsafe { as_bytes(&EntryPointCommand {
-        cmd: LC_MAIN, cmdsize: 24, entryoff: entry_off, stacksize: 0,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&EntryPointCommand {
+            cmd: LC_MAIN,
+            cmdsize: 24,
+            entryoff: entry_off,
+            stacksize: 0,
+        })
+    });
 
     // LC_LOAD_DYLIB entries
     if args.dylibs.is_empty() {
@@ -370,8 +618,8 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
             let cmdsize = 24 + padded;
             push_u32(&mut out, LC_LOAD_DYLIB);
             push_u32(&mut out, cmdsize as u32);
-            push_u32(&mut out, 24);      // name offset
-            push_u32(&mut out, 2);       // timestamp
+            push_u32(&mut out, 24); // name offset
+            push_u32(&mut out, 2); // timestamp
             push_u32(&mut out, 0x0001_0000);
             push_u32(&mut out, 0x0001_0000);
             out.extend_from_slice(bytes);
@@ -382,14 +630,21 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     }
 
     // LC_CODE_SIGNATURE
-    out.extend_from_slice(unsafe { as_bytes(&LinkeditDataCommand {
-        cmd: LC_CODE_SIGNATURE, cmdsize: LDS as u32,
-        dataoff: sig_off as u32, datasize: sig_size as u32,
-    })});
+    out.extend_from_slice(unsafe {
+        as_bytes(&LinkeditDataCommand {
+            cmd: LC_CODE_SIGNATURE,
+            cmdsize: LDS as u32,
+            dataoff: sig_off as u32,
+            datasize: sig_size as u32,
+        })
+    });
 
     // Verify header size matches expected.
-    debug_assert!(out.len() <= header_total,
-        "header overflow: {} > {header_total}", out.len());
+    debug_assert!(
+        out.len() <= header_total,
+        "header overflow: {} > {header_total}",
+        out.len()
+    );
 
     // ---- Section content ----
     out.resize(first_section_off, 0);
@@ -400,11 +655,18 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
 
     for i in sorted_indices {
         let ms = &layout.merged[i];
-        if ms.data.is_empty() { continue; }
+        if ms.data.is_empty() {
+            continue;
+        }
         if ms.file_offset < out.len() {
             // Already past this offset (shouldn't happen with correct layout).
-            eprintln!("warning: section {}:{} file_offset {:#x} < out.len() {:#x}",
-                      ms.seg, ms.name, ms.file_offset, out.len());
+            eprintln!(
+                "warning: section {}:{} file_offset {:#x} < out.len() {:#x}",
+                ms.seg,
+                ms.name,
+                ms.file_offset,
+                out.len()
+            );
             continue;
         }
         out.resize(ms.file_offset, 0);
@@ -416,14 +678,22 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
     out.extend_from_slice(&cf.blob);
     out.resize(trie_off, 0);
     out.extend_from_slice(&[0u8; TRIE_SIZE]); // empty exports trie
-    out.push(0);                               // strtab null byte
+    out.push(0); // strtab null byte
     out.resize(code_limit, 0);
 
-    debug_assert_eq!(out.len(), code_limit,
-        "code_limit mismatch: {} vs {code_limit}", out.len());
+    debug_assert_eq!(
+        out.len(),
+        code_limit,
+        "code_limit mismatch: {} vs {code_limit}",
+        out.len()
+    );
 
     // ---- Code signature ----
-    let exec_seg_limit = if has_data { data_fileoff as u64 } else { layout.linkedit_fileoff as u64 };
+    let exec_seg_limit = if has_data {
+        data_fileoff as u64
+    } else {
+        layout.linkedit_fileoff as u64
+    };
     let sig = sign::make_code_signature(&out, identifier, exec_seg_limit as u64);
     assert_eq!(sig.len(), sig_size, "signature size mismatch");
     out.extend_from_slice(&sig);
@@ -435,12 +705,12 @@ pub fn emit(args: &EmitArgs) -> Vec<u8> {
 fn make_empty_chained_fixups() -> Vec<u8> {
     // Same as Phase 1's make_chained_fixups()
     let fields: [u32; 12] = [
-        0, 32, 48, 48, 0, 1, 0, 0,  // header (8 u32s = 32 bytes)
-        3, 0, 0, 0,                  // starts_in_image: 3 segs, all zero offsets
+        0, 32, 48, 48, 0, 1, 0, 0, // header (8 u32s = 32 bytes)
+        3, 0, 0, 0, // starts_in_image: 3 segs, all zero offsets
     ];
     let mut v = vec![0u8; 56];
     for (i, &f) in fields.iter().enumerate() {
-        v[i*4..i*4+4].copy_from_slice(&f.to_le_bytes());
+        v[i * 4..i * 4 + 4].copy_from_slice(&f.to_le_bytes());
     }
     v
 }

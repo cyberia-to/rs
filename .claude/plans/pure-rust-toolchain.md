@@ -327,6 +327,28 @@ message machinery (core::fmt::write through a local-GOT formatter) works.
 Next fault: `ldp [x10+0x20]` with x10=0x40 in alloc::collections::btree
 node code (thread_info map) — pointer corruption, next task.
 
+**Update 2026-10-16 (session 4) — ASLR milestone + sret.**
+
+- macho-linker: chained-fixups REBASE entries for internal absolute
+  pointers (vtables, fn-ptr statics, local GOT). Three format details were
+  wrong vs dyld's page-in-linking (kernel map-with-linking path): seg offsets
+  in starts_in_image are RELATIVE to the starts struct; segment_offset is a
+  FILE offset; chain `next` is the 4-byte-unit delta between non-contiguous
+  slots, grouped by the 16KB chain page (a 4K mask splits chains). Also fixed
+  a pre-existing double-addend in Unsigned application.
+- Result: `fn main() { std::process::exit(42) }` exits 42 from the shell
+  under real ASLR (5/5 runs). Previously only with slide 0.
+- codegen: &str/&[T] constants (ConstValue::Slice) interned as statics with
+  a {data,len} pair; &str/&[T] are fat args (two registers); AAPCS sret for
+  aggregates >16 bytes (x8 indirect result location, both call boundaries).
+
+Verified 2026-10-16: workspace 173 green; 11/11 integration; p2 exits 42
+under ASLR.
+Next fault: println! panics "RefCell already borrowed" at
+stdout.rs:860 (StdoutLock::write) — the RefCell borrow flag is already set
+on the first write; candidates: TLS LOCAL_STDOUT overlap or
+ReentrantMutex/Stdout layout across the codegen boundary.
+
 Verification (2026-10-09, session 2 HEAD):
 - `cargo test --workspace` — all suites green.
 - `bash codegen/tests/run_integration.sh` — 11/11 PASS.

@@ -714,13 +714,17 @@ impl<'tcx> MirToLir<'tcx> {
         )
     }
 
-    /// A fat pointer: `&dyn Trait` / `*mut dyn Trait` — 16 bytes {data, vtable}.
-    /// Passed in TWO consecutive arg registers per AAPCS (our own functions and
-    /// LLVM-built rlib code share this ABI at the call boundary).
+    /// A fat pointer: `&dyn Trait` / `*mut dyn Trait` / `&str` / `&[T]` —
+    /// 16 bytes {data, metadata}. Passed in TWO consecutive arg registers per
+    /// AAPCS (our own functions and LLVM-built rlib code share this ABI at
+    /// the call boundary).
     fn is_fat_ptr(&self, ty: ty::Ty<'tcx>) -> bool {
         match ty.kind() {
             TyKind::Ref(_, inner, _) | TyKind::RawPtr(inner, _) => {
-                matches!(inner.kind(), TyKind::Dynamic(..))
+                matches!(
+                    inner.kind(),
+                    TyKind::Dynamic(..) | TyKind::Str | TyKind::Slice(..)
+                )
             }
             _ => false,
         }
@@ -1443,6 +1447,69 @@ impl<'tcx> MirToLir<'tcx> {
                         }
                         return Ok(dst);
                     }
+                }
+                // &str / &[T] slice constant: {data_ptr, len} pair in BSS
+                // (rustc represents these as ConstValue::Slice).
+                let slice_bytes: Option<(Vec<u8>, u64)> = match &c.const_ {
+                    mir::Const::Val(ConstValue::Slice { alloc_id, meta }, _) => {
+                        let alloc = self.tcx.global_alloc(*alloc_id);
+                        if let GlobalAlloc::Memory(alloc) = alloc {
+                            let inner = alloc.inner();
+                            Some((
+                                inner
+                                    .inspect_with_uninit_and_ptr_outside_interpreter(0..inner.len())
+                                    .to_vec(),
+                                *meta,
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some((bytes, len)) = slice_bytes {
+                    // Intern the bytes as a read-only static.
+                    let data_sym = format!("__str_const_{}", self.agg_counter);
+                    self.agg_counter += 1;
+                    self.statics.push(StaticData {
+                        name: data_sym.clone(),
+                        bytes,
+                        writable: false,
+                    });
+                    // Build the {ptr, len} pair in BSS, return its address.
+                    let fp_sym = format!("__fat_ptr_{}", self.agg_counter);
+                    self.agg_counter += 1;
+                    self.statics.push(StaticData {
+                        name: fp_sym.clone(),
+                        bytes: vec![0u8; 16],
+                        writable: true,
+                    });
+                    let fp_addr = self.alloc_reg();
+                    self.ops.push(LIROp::LoadAddr {
+                        dst: fp_addr,
+                        symbol: fp_sym,
+                    });
+                    let r_data = self.alloc_reg();
+                    self.ops.push(LIROp::LoadAddr {
+                        dst: r_data,
+                        symbol: data_sym,
+                    });
+                    self.ops.push(LIROp::Store {
+                        src: r_data,
+                        base: fp_addr,
+                        offset: 0,
+                    });
+                    let r_len = self.alloc_reg();
+                    self.ops.push(LIROp::LoadImm(r_len, len));
+                    self.ops.push(LIROp::Store {
+                        src: r_len,
+                        base: fp_addr,
+                        offset: 8,
+                    });
+                    if dst != fp_addr {
+                        self.ops.push(LIROp::Move(dst, fp_addr));
+                    }
+                    return Ok(dst);
                 }
                 // FnDef constant → load the function's address.
                 if let TyKind::FnDef(def_id, substs) = c.const_.ty().kind() {

@@ -173,9 +173,10 @@ impl<'tcx> MirToLir<'tcx> {
             } else {
                 ((arg_size + 7) / 8) as u32
             };
-            // If the argument is a composite type occupying >1 register slot, spill it
-            // to a writable memory location so Field projections work correctly.
-            if slots > 1 && self.is_composite_type(arg_ty) {
+            // If the argument is a composite type or a fat pointer occupying >1
+            // register slot, spill it to a writable memory location so Field
+            // projections / vtable accesses work correctly.
+            if slots > 1 && (self.is_composite_type(arg_ty) || self.is_fat_ptr(arg_ty)) {
                 // Allocate a BSS static for the spill slot.
                 let spill_sym = format!("__arg_spill_{}_{}", self.agg_counter, i);
                 self.agg_counter += 1;
@@ -711,6 +712,18 @@ impl<'tcx> MirToLir<'tcx> {
             ty.kind(),
             TyKind::Adt(..) | TyKind::Tuple(..) | TyKind::Array(..)
         )
+    }
+
+    /// A fat pointer: `&dyn Trait` / `*mut dyn Trait` — 16 bytes {data, vtable}.
+    /// Passed in TWO consecutive arg registers per AAPCS (our own functions and
+    /// LLVM-built rlib code share this ABI at the call boundary).
+    fn is_fat_ptr(&self, ty: ty::Ty<'tcx>) -> bool {
+        match ty.kind() {
+            TyKind::Ref(_, inner, _) | TyKind::RawPtr(inner, _) => {
+                matches!(inner.kind(), TyKind::Dynamic(..))
+            }
+            _ => false,
+        }
     }
 
     // ── Rvalue lowering ────────────────────────────────────────────────────
@@ -1344,13 +1357,39 @@ impl<'tcx> MirToLir<'tcx> {
                     symbol: sym,
                 });
                 // Copy slots from the operand's register(s) into BSS.
-                // Since it's not mem-backed, it may just be a single register value.
                 let val = self.lower_place_to_reg(place, body)?;
-                self.ops.push(LIROp::Store {
-                    src: val,
-                    base: ptr,
-                    offset: 0,
-                });
+                if self.is_fat_ptr(ty) {
+                    // `val` is the pair ADDRESS ({data, vtable}); copy both halves.
+                    let t0 = self.alloc_reg();
+                    self.ops.push(LIROp::Load {
+                        dst: t0,
+                        base: val,
+                        offset: 0,
+                    });
+                    self.ops.push(LIROp::Store {
+                        src: t0,
+                        base: ptr,
+                        offset: 0,
+                    });
+                    let t1 = self.alloc_reg();
+                    self.ops.push(LIROp::Load {
+                        dst: t1,
+                        base: val,
+                        offset: 8,
+                    });
+                    self.ops.push(LIROp::Store {
+                        src: t1,
+                        base: ptr,
+                        offset: 8,
+                    });
+                } else {
+                    // Single register value.
+                    self.ops.push(LIROp::Store {
+                        src: val,
+                        base: ptr,
+                        offset: 0,
+                    });
+                }
                 Ok(ptr)
             }
             mir::Operand::Constant(_) => {
@@ -1575,11 +1614,13 @@ impl<'tcx> MirToLir<'tcx> {
             return Ok(None);
         };
 
-        // arg[0] is the fat pointer; its register holds the BSS address of {data_ptr, vtable_ptr}.
+        // arg[0] is the fat pointer; its pair ADDRESS is needed (vtable at +8),
+        // not the loaded data half — lower via the composite path, which returns
+        // the mem-local pointer without dereferencing.
         let arg0 = args
             .first()
             .ok_or_else(|| "virtual call with no self argument".to_string())?;
-        let fat_ptr_addr = self.lower_operand(&arg0.node, body)?;
+        let fat_ptr_addr = self.lower_composite_arg_ptr(&arg0.node, body)?;
 
         // Load vtable_ptr (offset 8 in the fat pointer).
         let vtable_ptr = self.alloc_reg();
@@ -1839,8 +1880,17 @@ impl<'tcx> MirToLir<'tcx> {
                 enum PreparedArg {
                     /// `slots` = register slots occupied (fat pointers take 2 even
                     /// though they lower to a single pair-address register).
-                    Simple { scratch: Reg, slots: u32 },
-                    Composite { ptr: Reg, slots: u32 },
+                    /// `fat` = load {data, vtable} from the pair into two registers
+                    /// (AAPCS) instead of moving the pair address.
+                    Simple {
+                        scratch: Reg,
+                        slots: u32,
+                        fat: bool,
+                    },
+                    Composite {
+                        ptr: Reg,
+                        slots: u32,
+                    },
                 }
                 let mut prepared: Vec<PreparedArg> = Vec::with_capacity(args.len());
                 for arg in args.iter() {
@@ -1856,14 +1906,24 @@ impl<'tcx> MirToLir<'tcx> {
                         let ptr = self.lower_composite_arg_ptr(&arg.node, body)?;
                         prepared.push(PreparedArg::Composite { ptr, slots });
                     } else {
-                        let src = self.lower_operand(&arg.node, body)?;
+                        // Fat pointers need the pair ADDRESS ({data, vtable} in
+                        // memory), not the loaded data half.
+                        let (src, is_pair_addr) = if self.is_fat_ptr(arg_ty) {
+                            (self.lower_composite_arg_ptr(&arg.node, body)?, true)
+                        } else {
+                            (self.lower_operand(&arg.node, body)?, false)
+                        };
                         // Copy into a scratch vreg (allocator starts above the arg
                         // range, so this can never be clobbered by arg moves).
                         let scratch = self.alloc_reg();
                         if src != scratch {
                             self.ops.push(LIROp::Move(scratch, src));
                         }
-                        prepared.push(PreparedArg::Simple { scratch, slots });
+                        prepared.push(PreparedArg::Simple {
+                            scratch,
+                            slots,
+                            fat: is_pair_addr,
+                        });
                     }
                 }
 
@@ -1872,8 +1932,9 @@ impl<'tcx> MirToLir<'tcx> {
                     let mut reg_slot = 0u32;
                     for (i, prepared_arg) in prepared.into_iter().enumerate() {
                         if i == 0 {
-                            // fat pointer: load data_ptr into x0 (the scratch /
-                            // composite ptr is the address of the {data, vtable} pair)
+                            // Virtual dispatch: the method takes a THIN self —
+                            // only the data half is passed (x0); the vtable stays
+                            // on the caller side. Remaining args shift down one slot.
                             let pair_addr = match prepared_arg {
                                 PreparedArg::Simple { scratch, .. } => scratch,
                                 PreparedArg::Composite { ptr, .. } => ptr,
@@ -1887,7 +1948,25 @@ impl<'tcx> MirToLir<'tcx> {
                             continue;
                         }
                         match prepared_arg {
-                            PreparedArg::Simple { scratch, slots } => {
+                            PreparedArg::Simple {
+                                scratch,
+                                slots,
+                                fat: true,
+                            } => {
+                                // AAPCS fat pointer: {data, vtable} in consecutive regs.
+                                self.ops.push(LIROp::Load {
+                                    dst: Reg(reg_slot),
+                                    base: scratch,
+                                    offset: 0,
+                                });
+                                self.ops.push(LIROp::Load {
+                                    dst: Reg(reg_slot + 1),
+                                    base: scratch,
+                                    offset: 8,
+                                });
+                                reg_slot += slots;
+                            }
+                            PreparedArg::Simple { scratch, slots, .. } => {
                                 if scratch.0 != reg_slot {
                                     self.ops.push(LIROp::Move(Reg(reg_slot), scratch));
                                 }
@@ -1910,7 +1989,24 @@ impl<'tcx> MirToLir<'tcx> {
                     let mut reg_slot = 0u32;
                     for prepared_arg in prepared.into_iter() {
                         match prepared_arg {
-                            PreparedArg::Simple { scratch, slots } => {
+                            PreparedArg::Simple {
+                                scratch,
+                                slots,
+                                fat: true,
+                            } => {
+                                self.ops.push(LIROp::Load {
+                                    dst: Reg(reg_slot),
+                                    base: scratch,
+                                    offset: 0,
+                                });
+                                self.ops.push(LIROp::Load {
+                                    dst: Reg(reg_slot + 1),
+                                    base: scratch,
+                                    offset: 8,
+                                });
+                                reg_slot += slots;
+                            }
+                            PreparedArg::Simple { scratch, slots, .. } => {
                                 if scratch.0 != reg_slot {
                                     self.ops.push(LIROp::Move(Reg(reg_slot), scratch));
                                 }

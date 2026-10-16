@@ -70,3 +70,25 @@ key=0x102, offset=0x28, size=0x91 — TLS works.
   Internal absolute pointers (vtables) are not in any fixup chain, so real
   (slid) runs likely still break — rebase coverage is a latent gap in
   macho-linker's chained-fixups output.
+
+## session 3 addendum (committed 218419b, 8abf96c)
+
+The btree crash was a chain of three independent bugs, found by watchpointing
+the exact stack slot that carried a garbage formatter fnptr into
+`core::fmt::write` (conditional watchpoint `$pc < 0x1000d0000`, dyld's own
+stack writes filtered by pc-range — note `--stop-at-entry` stops at dyld's
+entry, NOT LC_MAIN, and dyld's page-in linking re-maps text pages, which
+silently deletes lldb software breakpoints):
+
+1. `__rust_no_alloc_shim_is_unstable_v2` emitted as data, but the alloc rlib
+   calls it → emitted as a one-`ret` function like rustc does.
+2. GOT relocs on locally-defined symbols fell back to the direct address;
+   `ldr [got]` then loaded instruction bytes as a pointer. Fixed with
+   synthesized local GOT slots (absolute address content).
+3. mir2lir call setup clobbered arg registers mid-move (lang_start's sigpipe
+   got argv's low byte → `unreachable!()` in reset_sigpipe). Two-phase
+   scratch-then-move; fat ptrs = 2 slots.
+
+After these, std panics PRINT and startup passes sigpipe/TLS/alloc. The
+remaining fault: `ldp [x10+0x20]`, x10=0x40, in btree node code reached via
+`stack_overflow::thread_info` — next task.

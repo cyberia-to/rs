@@ -302,6 +302,31 @@ The std-binary failure was one linked chain, not two independent bugs:
 Verified with dyld at LC_MAIN entry: descriptor rewritten to v2
 `{func=_tlv_get_addr, key, offset=0x28, delta, size=0x91}` — TLS setup works.
 
+**Update 2026-10-09 (session 3) — panic path unblocked; startup advances
+past TLS, allocator shim, sigpipe.**
+
+- `__rust_no_alloc_shim_is_unstable_v2` was emitted as a 1-byte static
+  (lands at start of __cstring); the alloc rlib CALLS it — rustc's own shim
+  emits a single `ret` in __text. Now FnStart/Return/FnEnd.
+- GOT relocs against locally-defined symbols fell back to the direct
+  address, so `ldr [got]` read function prologues as pointers (garbage
+  formatter fnptr in core::fmt::write). Now: local GOT slots synthesized
+  after the import slots, filled with the symbol's absolute address
+  (`resolve::collect_local_gots`, main.rs step 5c).
+- Local symbol names are object-scoped (`name#<id>`): `ltmp0` exists in
+  100+ rlib objects and overwrote same-named locals in the global table.
+- mir2lir Call: two-phase argument setup (scratch vregs first, then moves
+  into x0..xN) — sequential moves used to clobber arg values still living in
+  later arg registers (lang_start fed argv into sigpipe →
+  `unreachable!()` at std sys/pal/unix/mod.rs:178 reset_sigpipe). Fat-pointer
+  args occupy TWO register slots even though they lower to one register.
+
+Verified: 173 workspace tests green, 11/11 + 2/2 integration, pure-rust-check.
+Std binary now panics visibly and gets past sigpipe/TLS/alloc; the panic
+message machinery (core::fmt::write through a local-GOT formatter) works.
+Next fault: `ldp [x10+0x20]` with x10=0x40 in alloc::collections::btree
+node code (thread_info map) — pointer corruption, next task.
+
 Verification (2026-10-09, session 2 HEAD):
 - `cargo test --workspace` — all suites green.
 - `bash codegen/tests/run_integration.sh` — 11/11 PASS.

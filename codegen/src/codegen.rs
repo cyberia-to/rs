@@ -275,6 +275,63 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         }
     }
 
+    // C main entry wrapper. rustc relies on the codegen backend to emit it
+    // (rustc_codegen_ssa::base::maybe_create_entry_fn): `main(argc, argv)`
+    // calls the `start` lang item with the Rust main fn, argc, argv, and the
+    // sigpipe attribute. Without it the linker entry falls back to the first
+    // text function (lang_start), which misreads argc/argv as fn ptr/sigpipe.
+    if let Some((main_def_id, entry_type)) = tcx.entry_fn(()) {
+        use rustc_session::config::EntryFnType;
+        if let EntryFnType::Main { sigpipe } = entry_type {
+            let main_is_local = main_def_id.is_local();
+            let main_instance = ty::Instance::mono(tcx, main_def_id);
+            let in_this_unit = fn_items.contains(&main_instance);
+            if (main_is_local && in_this_unit) || !main_is_local {
+                let rust_main_sym = tcx.symbol_name(main_instance).name.to_string();
+                // A #[no_mangle] extern "C" fn main IS the C entry already.
+                if rust_main_sym != "main" && rust_main_sym != "_main" {
+                    let env = ty::TypingEnv::fully_monomorphized();
+                    let main_ret_ty = tcx
+                        .fn_sig(main_def_id)
+                        .instantiate_identity()
+                        .skip_binder()
+                        .output();
+                    let main_ret_ty = tcx.normalize_erasing_regions(env, main_ret_ty);
+                    let start_def_id =
+                        tcx.require_lang_item(rustc_hir::LangItem::Start, rustc_span::DUMMY_SP);
+                    let start_instance = ty::Instance::expect_resolve(
+                        tcx,
+                        env,
+                        start_def_id,
+                        tcx.mk_args(&[main_ret_ty.into()]),
+                        rustc_span::DUMMY_SP,
+                    );
+                    let start_sym = tcx.symbol_name(start_instance).name.to_string();
+                    let start_name = start_sym.clone();
+                    if seen.insert(start_sym) {
+                        queue.push_back(start_instance);
+                    }
+                    // main(argc: c_int /*x0*/, argv: *const *const c_char /*x1*/) -> c_int
+                    let saved_argc = Reg(15); // x19 — callee-saved scratch
+                    let saved_argv = Reg(16); // x20
+                    all_ops.push(LIROp::FnStart("main".to_string()));
+                    all_ops.push(LIROp::Move(saved_argc, Reg(0)));
+                    all_ops.push(LIROp::Move(saved_argv, Reg(1)));
+                    all_ops.push(LIROp::LoadAddr {
+                        dst: Reg(0),
+                        symbol: rust_main_sym,
+                    });
+                    all_ops.push(LIROp::Move(Reg(1), saved_argc));
+                    all_ops.push(LIROp::Move(Reg(2), saved_argv));
+                    all_ops.push(LIROp::LoadImm(Reg(3), sigpipe as u64));
+                    all_ops.push(LIROp::Call(start_name));
+                    all_ops.push(LIROp::Return);
+                    all_ops.push(LIROp::FnEnd);
+                }
+            }
+        }
+    }
+
     // Emit 8-byte BSS key slot for each TLS variable.
     // The per-thread data is lazily malloc'd by __trident_tls_get; this slot holds the
     // pthread_key_t (0 = not yet created).
@@ -300,18 +357,22 @@ pub fn codegen_crate(tcx: TyCtxt<'_>) -> TridentOutput {
         // The no-alloc-shim guard: alloc CRATES call this symbol as a function
         // (rustc's own shim emits a single `ret` in __text — a data symbol would
         // land in __cstring/__const and the call would execute string bytes).
-        all_ops.push(LIROp::FnStart(rustc_symbol_mangling::mangle_internal_symbol(
-            tcx,
-            rustc_ast::expand::allocator::NO_ALLOC_SHIM_IS_UNSTABLE,
-        )));
+        all_ops.push(LIROp::FnStart(
+            rustc_symbol_mangling::mangle_internal_symbol(
+                tcx,
+                rustc_ast::expand::allocator::NO_ALLOC_SHIM_IS_UNSTABLE,
+            ),
+        ));
         all_ops.push(LIROp::Return);
         all_ops.push(LIROp::FnEnd);
         // `__rust_alloc_error_handler_should_panic`: a FUNCTION returning the
         // OOM-strategy flag (std calls it; no rlib defines it — the shim does).
-        all_ops.push(LIROp::FnStart(rustc_symbol_mangling::mangle_internal_symbol(
-            tcx,
-            rustc_session::config::OomStrategy::SYMBOL,
-        )));
+        all_ops.push(LIROp::FnStart(
+            rustc_symbol_mangling::mangle_internal_symbol(
+                tcx,
+                rustc_session::config::OomStrategy::SYMBOL,
+            ),
+        ));
         all_ops.push(LIROp::LoadImm(
             Reg(0),
             tcx.sess.opts.unstable_opts.oom.should_panic() as u64,

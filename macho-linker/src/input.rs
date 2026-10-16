@@ -222,13 +222,12 @@ fn sec_flags(_file: &object::File<'_>, sec: &object::Section<'_, '_>) -> u32 {
 fn parse_relocs(
     file: &object::File<'_>,
     sec: &object::Section<'_, '_>,
-    raw_file: &[u8],
+    _raw_file: &[u8],
     sections_so_far: &[SecData],
     _total_sections: usize,
     local_suffix: &str,
 ) -> Result<Vec<Reloc>, String> {
     let mut out = Vec::new();
-    let sec_raw = sec.data().unwrap_or(&[]);
 
     for (offset, reloc) in sec.relocations() {
         let (r_type, r_length) = match reloc.flags() {
@@ -302,8 +301,10 @@ fn parse_relocs(
             _ => RelocTarget::Symbol(String::new()),
         };
 
-        // Read the implicit addend from the instruction/data bytes.
-        let addend: i64 = read_addend(sec_raw, offset as usize, kind, size_bits);
+        // The addend: the object crate already pairs ARM64_RELOC_ADDEND (whose
+        // value lives in r_symbolnum) into the following relocation's addend(),
+        // falling back to the implicit addend stored at the relocation site.
+        let addend: i64 = reloc.addend();
 
         out.push(Reloc {
             offset,
@@ -314,25 +315,6 @@ fn parse_relocs(
         });
     }
     Ok(out)
-}
-
-/// Read the embedded addend from the relocation site.
-/// For instruction relocations (BRANCH26, PAGE21, etc.) the field is 0 in .o files.
-/// For UNSIGNED, the full address is at the site.
-fn read_addend(data: &[u8], off: usize, kind: RelocKind, size_bits: u8) -> i64 {
-    match kind {
-        RelocKind::Unsigned => {
-            if size_bits == 64 && off + 8 <= data.len() {
-                i64::from_le_bytes(data[off..off + 8].try_into().unwrap())
-            } else if off + 4 <= data.len() {
-                i32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as i64
-            } else {
-                0
-            }
-        }
-        // Instruction relocations: the field in the .o is 0.
-        _ => 0,
-    }
 }
 
 fn parse_symbols(
@@ -354,10 +336,11 @@ fn parse_symbols(
         }
 
         let is_defined = sym.is_definition();
-        let is_local_def = is_defined && !matches!(
-            sym.scope(),
-            object::SymbolScope::Linkage | object::SymbolScope::Dynamic
-        );
+        let is_local_def = is_defined
+            && !matches!(
+                sym.scope(),
+                object::SymbolScope::Linkage | object::SymbolScope::Dynamic
+            );
         let is_global = matches!(
             sym.scope(),
             object::SymbolScope::Linkage | object::SymbolScope::Dynamic

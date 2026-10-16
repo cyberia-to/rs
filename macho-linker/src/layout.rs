@@ -121,7 +121,27 @@ pub fn perform(
                 let pad = align_bytes - (ms.virtual_size % align_bytes);
                 let pad = if pad == align_bytes { 0 } else { pad };
                 let off = ms.virtual_size + pad;
-                ms.virtual_size = off + sec.virtual_size;
+                // LTO objects carry truncated zerofill section sizes; symbols
+                // regularly live past the declared size. Size the chunk by the
+                // symbol extents (ld64 does the same) so no symbol lands
+                // outside — or worse, aliases another symbol's address.
+                let mut extent = sec.virtual_size as u64;
+                for sym in &obj.symbols {
+                    if sym.is_defined && sym.section_idx == Some(sec_idx) {
+                        extent = extent.max(sym.offset + 8);
+                    }
+                }
+                if std::env::var_os("MACHO_LINK_DEBUG").is_some() {
+                    eprintln!(
+                        "DBG bss chunk obj={} sec={} declared={:#x} extent={:#x} nsyms={}",
+                        obj_idx,
+                        sec_idx,
+                        sec.virtual_size,
+                        extent,
+                        obj.symbols.len()
+                    );
+                }
+                ms.virtual_size = off + extent as usize;
                 off
             } else {
                 let pad = align_bytes - (ms.data.len() % align_bytes);
@@ -371,6 +391,16 @@ pub fn perform(
     }
 
     // Assign stub addresses and update DylibImport entries.
+    if std::env::var_os("MACHO_LINK_DEBUG").is_some() {
+        for (name, sym) in &syms.syms {
+            if name.contains("4lock4LOCK") || name.contains("MergedGlobals") {
+                eprintln!(
+                    "DBG sym(after) {name} = {:#x} kind={:?}",
+                    sym.addr, sym.kind
+                );
+            }
+        }
+    }
     let mut stub_addrs: Vec<u64> = Vec::new();
     let mut got_addrs: Vec<u64> = Vec::new();
 

@@ -212,7 +212,23 @@ impl<'tcx> MirToLir<'tcx> {
             }
             reg_slot += slots;
         }
-        self.locals.insert(mir::Local::from_usize(0), Reg(0));
+
+        // AAPCS sret: aggregates larger than 16 bytes are returned through
+        // the indirect result location in x8 (real args stay in x0.. — x8 is
+        // used precisely to avoid shifting). Copy x8 to a callee-saved vreg
+        // and back the return place with it; the empty mem_ptr_sym sentinel
+        // means "the vreg IS the address — no per-BB rematerialization".
+        let ret_ty = self.mono_ty(body.return_ty());
+        if self.type_size(ret_ty) > 16 {
+            let p = self.alloc_reg();
+            self.ops.push(LIROp::Move(p, Reg(8)));
+            self.locals.insert(mir::Local::from_usize(0), p);
+            self.mem_locals.insert(mir::Local::from_usize(0));
+            self.mem_ptr_def_bb
+                .insert(mir::Local::from_usize(0), u32::MAX);
+        } else {
+            self.locals.insert(mir::Local::from_usize(0), Reg(0));
+        }
 
         for (bb_idx, bb_data) in body.basic_blocks.iter_enumerated() {
             self.cur_bb = bb_idx.index() as u32;
@@ -2094,7 +2110,32 @@ impl<'tcx> MirToLir<'tcx> {
                     }
                 }
 
+                // Determine the callee's return ABI. Aggregates >16 bytes
+                // return via the AAPCS indirect result location: the caller
+                // passes a backing buffer in x8 and the callee writes it —
+                // no post-call value capture.
+                let ret_ty = self.mono_ty(destination.ty(&body.local_decls, self.tcx).ty);
+                let sret = self.type_size(ret_ty) > 16;
+                let sret_sym = if sret {
+                    let sym = format!("__cagg_{}", self.agg_counter);
+                    self.agg_counter += 1;
+                    self.statics.push(StaticData {
+                        name: sym.clone(),
+                        bytes: vec![0u8; self.type_size(ret_ty) as usize],
+                        writable: true,
+                    });
+                    Some(sym)
+                } else {
+                    None
+                };
+
                 // Emit the call.
+                if let Some(ref sym) = sret_sym {
+                    self.ops.push(LIROp::LoadAddr {
+                        dst: Reg(8),
+                        symbol: sym.clone(),
+                    });
+                }
                 if let Some(fp) = virtual_fn_ptr {
                     self.ops.push(LIROp::CallIndirect(fp));
                 } else if let Some(fp) = indirect_fn_ptr {
@@ -2146,6 +2187,7 @@ impl<'tcx> MirToLir<'tcx> {
                             }
                             let sym = self.tcx.symbol_name(inst).name.to_string();
                             self.ops.push(LIROp::Call(sym));
+                            let _ = &sret_sym; // x8 already loaded above
                         } else {
                             let name = self.tcx.def_path_str(*def_id);
                             self.tcx
@@ -2159,19 +2201,60 @@ impl<'tcx> MirToLir<'tcx> {
                     }
                 }
 
-                // Capture return value (x0 → destination reg or memory).
-                match self.lower_place(destination, body)? {
-                    PlaceLoc::Reg(dst) => {
-                        if dst.0 != 0 {
-                            self.ops.push(LIROp::Move(dst, Reg(0)));
+                // Capture the return value. sret: the callee wrote the
+                // backing buffer passed in x8 — bind the destination local
+                // to it (no register capture). Otherwise x0 → destination.
+                if let Some(ref sym) = sret_sym {
+                    if destination.projection.is_empty() {
+                        let ptr = self.alloc_reg();
+                        self.ops.push(LIROp::LoadAddr {
+                            dst: ptr,
+                            symbol: sym.clone(),
+                        });
+                        self.locals.insert(destination.local, ptr);
+                        self.mem_locals.insert(destination.local);
+                        self.mem_ptr_def_bb.insert(destination.local, u32::MAX);
+                    } else {
+                        // Projected destination: copy the returned bytes
+                        // from the sret buffer field-by-field.
+                        let ptr = self.alloc_reg();
+                        self.ops.push(LIROp::LoadAddr {
+                            dst: ptr,
+                            symbol: sym.clone(),
+                        });
+                        if let PlaceLoc::Mem(dst_ptr) = self.lower_place(destination, body)? {
+                            let mut off = 0i32;
+                            let size = self.type_size(ret_ty);
+                            while off + 8 <= size as i32 {
+                                let t = self.alloc_reg();
+                                self.ops.push(LIROp::Load {
+                                    dst: t,
+                                    base: ptr,
+                                    offset: off,
+                                });
+                                self.ops.push(LIROp::Store {
+                                    src: t,
+                                    base: dst_ptr,
+                                    offset: off,
+                                });
+                                off += 8;
+                            }
                         }
                     }
-                    PlaceLoc::Mem(ptr) => {
-                        self.ops.push(LIROp::Store {
-                            src: Reg(0),
-                            base: ptr,
-                            offset: 0,
-                        });
+                } else {
+                    match self.lower_place(destination, body)? {
+                        PlaceLoc::Reg(dst) => {
+                            if dst.0 != 0 {
+                                self.ops.push(LIROp::Move(dst, Reg(0)));
+                            }
+                        }
+                        PlaceLoc::Mem(ptr) => {
+                            self.ops.push(LIROp::Store {
+                                src: Reg(0),
+                                base: ptr,
+                                offset: 0,
+                            });
+                        }
                     }
                 }
                 if let Some(next) = target {

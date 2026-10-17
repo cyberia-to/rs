@@ -24,6 +24,7 @@ fn phys_direct(vr: Reg) -> Option<u8> {
         0..=7 => Some(vr.0 as u8),
         8..=14 => Some(vr.0 as u8 + 1),  // x9-x15
         15..=23 => Some(vr.0 as u8 + 4), // x19-x27
+        u32::MAX => Some(8),            // X8 sentinel: the AAPCS indirect result
         _ => None,
     }
 }
@@ -325,7 +326,9 @@ impl Ctx {
         let mut max_spill: i64 = -1;
         for op in ops {
             for reg in Self::collect_regs(op) {
-                if reg.0 >= 24 {
+                // Spill slots are vregs >= 24 that have no direct mapping —
+                // the X8 sentinel (u32::MAX) maps to physical x8, not a slot.
+                if reg.0 >= 24 && phys_direct(reg).is_none() {
                     max_spill = max_spill.max(reg.0 as i64);
                 }
             }

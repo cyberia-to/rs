@@ -3,6 +3,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Reg(pub u32);
 
+/// The AAPCS indirect result location (physical x8). The backend's Reg
+/// numbering skips x8 (Reg(8..14) map to x9-x15), so sret uses this sentinel.
+pub const X8: Reg = Reg(u32::MAX);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Label(pub String);
 

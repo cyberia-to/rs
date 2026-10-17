@@ -7,6 +7,7 @@ use rustc_middle::mir::interpret::{GlobalAlloc, Scalar};
 use rustc_middle::mir::ConstValue;
 use rustc_middle::ty::adjustment::PointerCoercion;
 use rustc_middle::ty::{self, Instance, TyCtxt, TyKind};
+use rustc_span::DUMMY_SP;
 
 use crate::lir::{LIROp, Label, Reg};
 
@@ -43,7 +44,11 @@ pub struct MirToLir<'tcx> {
     statics: Vec<StaticData>,
     static_relocs: Vec<StaticReloc>,
     tls_vars: HashMap<String, u64>, // storage_sym → byte size
-    agg_counter: u32,
+    // Per-crate unique id for internal static names. MirToLir instances are
+    // created per function, but all statics land in ONE object file — a
+    // per-instance counter makes __cagg_1 collide across functions and the
+    // linker aliases their memory. Static atomic keeps names deterministic
+    // (the worklist is processed sequentially).
     /// Cross-crate-inlinable callees (e.g. `core::intrinsics::compare_bytes`)
     /// whose symbol carries an instantiating-crate suffix: no rlib defines them,
     /// so the caller's crate must emit the body. Collected here, lowered by
@@ -58,6 +63,16 @@ pub struct MirToLir<'tcx> {
     cur_bb: u32,
 }
 
+/// Per-crate unique id for internal static names (__cagg_N, __arg_spill_N,
+/// __fat_ptr_N, __str_const_N, ...). MirToLir instances are created per
+/// function, but all statics land in ONE object file — a per-instance counter
+/// makes e.g. __cagg_1 collide across functions and the linker aliases their
+/// memory. Processed sequentially, so a plain atomic keeps names deterministic.
+fn next_agg_id() -> u32 {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl<'tcx> MirToLir<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) -> Self {
         Self {
@@ -70,7 +85,6 @@ impl<'tcx> MirToLir<'tcx> {
             statics: Vec::new(),
             static_relocs: Vec::new(),
             tls_vars: HashMap::new(),
-            agg_counter: 0,
             extra_instances: Vec::new(),
             mem_ptr_sym: HashMap::new(),
             mem_ptr_def_bb: HashMap::new(),
@@ -178,8 +192,8 @@ impl<'tcx> MirToLir<'tcx> {
             // projections / vtable accesses work correctly.
             if slots > 1 && (self.is_composite_type(arg_ty) || self.is_fat_ptr(arg_ty)) {
                 // Allocate a BSS static for the spill slot.
-                let spill_sym = format!("__arg_spill_{}_{}", self.agg_counter, i);
-                self.agg_counter += 1;
+                let spill_id = next_agg_id();
+                let spill_sym = format!("__arg_spill_{}_{}", spill_id, i);
                 self.statics.push(StaticData {
                     name: spill_sym.clone(),
                     bytes: vec![0u8; arg_size as usize],
@@ -221,7 +235,7 @@ impl<'tcx> MirToLir<'tcx> {
         let ret_ty = self.mono_ty(body.return_ty());
         if self.type_size(ret_ty) > 16 {
             let p = self.alloc_reg();
-            self.ops.push(LIROp::Move(p, Reg(8)));
+            self.ops.push(LIROp::Move(p, crate::lir::X8));
             self.locals.insert(mir::Local::from_usize(0), p);
             self.mem_locals.insert(mir::Local::from_usize(0));
             self.mem_ptr_def_bb
@@ -274,6 +288,31 @@ impl<'tcx> MirToLir<'tcx> {
                 match self.lower_place(place, body)? {
                     PlaceLoc::Reg(dst) => self.lower_rvalue_into(dst, rvalue, body)?,
                     PlaceLoc::Mem(ptr) => {
+                        // Use/Copy of a multi-word composite into memory:
+                        // copy every 8-byte slot (lower_rvalue_into would move
+                        // just the source address into word 0).
+                        if let mir::Rvalue::Use(operand) = rvalue {
+                            let op_ty = self.mono_ty(operand.ty(&body.local_decls, self.tcx));
+                            if self.type_size(op_ty) > 8 {
+                                let src_ptr = self.lower_operand(operand, body)?;
+                                let slots = (self.type_size(op_ty) + 7) / 8;
+                                for slot in 0..slots {
+                                    let tmp = self.alloc_reg();
+                                    let off = (slot * 8) as i32;
+                                    self.ops.push(LIROp::Load {
+                                        dst: tmp,
+                                        base: src_ptr,
+                                        offset: off,
+                                    });
+                                    self.ops.push(LIROp::Store {
+                                        src: tmp,
+                                        base: ptr,
+                                        offset: off,
+                                    });
+                                }
+                                return Ok(());
+                            }
+                        }
                         let tmp = self.alloc_reg();
                         self.lower_rvalue_into(tmp, rvalue, body)?;
                         self.ops.push(LIROp::Store {
@@ -326,8 +365,7 @@ impl<'tcx> MirToLir<'tcx> {
         body: &mir::Body<'tcx>,
     ) -> Result<(Reg, String), String> {
         let size = self.type_size(place_ty) as usize;
-        let sym = format!("__cagg_{}", self.agg_counter);
-        self.agg_counter += 1;
+        let sym = format!("__cagg_{}", next_agg_id());
         self.statics.push(StaticData {
             name: sym.clone(),
             bytes: vec![0u8; size],
@@ -913,8 +951,7 @@ impl<'tcx> MirToLir<'tcx> {
                     let val = self.local_reg(place.local);
                     let ty = self.mono_ty(body.local_decls[place.local].ty);
                     let sz = self.type_size(ty).max(1) as usize;
-                    let sym = format!("__local_ref_{}", self.agg_counter);
-                    self.agg_counter += 1;
+                    let sym = format!("__local_ref_{}", next_agg_id());
                     self.statics.push(StaticData {
                         name: sym.clone(),
                         bytes: vec![0u8; sz],
@@ -1003,8 +1040,7 @@ impl<'tcx> MirToLir<'tcx> {
                         self.ops.push(LIROp::LoadImm(dst, packed));
                     } else {
                         // General case: allocate writable BSS static for the aggregate.
-                        let agg_id = self.agg_counter;
-                        self.agg_counter += 1;
+                        let agg_id = next_agg_id();
                         let field_tys: Vec<ty::Ty<'tcx>> = fields
                             .iter_enumerated()
                             .map(|(_, op)| self.mono_ty(op.ty(&body.local_decls, self.tcx)))
@@ -1041,27 +1077,107 @@ impl<'tcx> MirToLir<'tcx> {
             }
 
             mir::Rvalue::Discriminant(place) => {
-                // Read the discriminant of an enum. The discriminant is at byte offset 0
-                // of the enum's memory layout. We need the address of the enum, not its
-                // value — use lower_place to get the PlaceLoc and handle both cases.
-                match self.lower_place(place, body)? {
-                    PlaceLoc::Mem(ptr) => {
-                        // Load discriminant (4-byte i32, zero-extended to 64 bits).
-                        self.ops.push(LIROp::LoadSize {
-                            dst,
-                            base: ptr,
-                            offset: 0,
-                            size: 4,
-                        });
+                // Read the discriminant per the enum's layout: Direct tags
+                // live in a tag field; Niche-encoded enums (Result<NonNull,_>,
+                // Option<Box<_>>, ...) store variant info in a field's niche
+                // (e.g. invalid pointer values), with the payload inline.
+                let ty = self.mono_ty(place.ty(&body.local_decls, self.tcx).ty);
+                let base = match self.lower_place(place, body)? {
+                    PlaceLoc::Mem(p) => p,
+                    PlaceLoc::Reg(_) => return Err("Discriminant on register-resident enum".into()),
+                };
+                let env = ty::TypingEnv::fully_monomorphized();
+                let layout = self
+                    .tcx
+                    .layout_of(env.as_query_input(ty))
+                    .map_err(|e| format!("discriminant layout: {e}"))?;
+                use rustc_abi::{FieldsShape, TagEncoding, Variants};
+                match &layout.variants {
+                    Variants::Single { index } => {
+                        self.ops.push(LIROp::LoadImm(dst, index.as_u32() as u64));
                     }
-                    PlaceLoc::Reg(r) => {
-                        // Enum is in a register (unlikely for composite, but handle it).
-                        // Discriminant is in the low 32 bits.
-                        self.ops.push(LIROp::ZeroExt {
-                            dst,
-                            src: r,
-                            from_bits: 32,
+                    Variants::Empty => {
+                        self.ops.push(LIROp::LoadImm(dst, 0));
+                    }
+                    Variants::Multiple {
+                        tag,
+                        tag_encoding,
+                        tag_field,
+                        variants,
+                        ..
+                    } => {
+                        let (offset, tag_size) = match &layout.fields {
+                            FieldsShape::Arbitrary { offsets, .. } => (
+                                offsets[*tag_field].bytes(),
+                                tag.primitive().size(&self.tcx).bytes(),
+                            ),
+                            _ => (0, layout.size.bytes()),
+                        };
+                        if std::env::var("TRIDENT_DEBUG_LIR").is_ok() {
+                            eprintln!(
+                                "DBG discrim ty={ty:?} enc={tag_encoding:?} off={offset} sz={tag_size} tagfield={tag_field:?}"
+                            );
+                        }
+                        let raw = self.alloc_reg();
+                        self.ops.push(LIROp::LoadSize {
+                            dst: raw,
+                            base,
+                            offset: offset as i32,
+                            size: tag_size as u8,
                         });
+                        match tag_encoding {
+                            TagEncoding::Direct { .. } => {
+                                // Tag values are variant indices (with possible
+                                // offset); MIR compares against index directly.
+                                self.ops.push(LIROp::Move(dst, raw));
+                            }
+                            TagEncoding::Niche {
+                                niche_variants,
+                                niche_start,
+                                ..
+                            } => {
+                                // variant = raw - niche_start; if in range it
+                                // selects niche_variants.start()+delta,
+                                // otherwise the one variant outside the range.
+                                let count = (niche_variants.end().as_u32()
+                                    - niche_variants.start().as_u32()
+                                    + 1) as u64;
+                                let start = niche_variants.start().as_u32() as u64;
+                                let adj = self.alloc_reg();
+                                self.ops.push(LIROp::LoadImm(adj, *niche_start as u64));
+                                let delta = self.alloc_reg();
+                                self.ops.push(LIROp::Sub(delta, raw, adj));
+                                let in_range = self.alloc_reg();
+                                self.ops.push(LIROp::LoadImm(in_range, count));
+                                let cmp = self.alloc_reg();
+                                self.ops.push(LIROp::Lt(cmp, delta, in_range));
+                                // other = the variant index outside niche_variants
+                                let other = (0..variants.len() as u32)
+                                    .find(|i| {
+                                        !niche_variants
+                                            .contains(&rustc_abi::VariantIdx::from_u32(*i))
+                                    })
+                                    .unwrap_or(0)
+                                    as u64;
+                                // dst = cmp ? start + delta : other
+                                let shifted = self.alloc_reg();
+                                self.ops.push(LIROp::Add(shifted, delta, Reg(0).into()));
+                                // shifted = delta + start (start folded via Add with imm)
+                                let start_reg = self.alloc_reg();
+                                self.ops.push(LIROp::LoadImm(start_reg, start));
+                                self.ops.push(LIROp::Add(shifted, delta, start_reg));
+                                let other_reg = self.alloc_reg();
+                                self.ops.push(LIROp::LoadImm(other_reg, other));
+                                // select: cmp ? shifted : other
+                                self.ops.push(LIROp::Mul(dst, shifted, cmp));
+                                let not_cmp = self.alloc_reg();
+                                self.ops.push(LIROp::LoadImm(not_cmp, 1));
+                                self.ops.push(LIROp::Sub(not_cmp, not_cmp, cmp));
+                                let other_part = self.alloc_reg();
+                                self.ops.push(LIROp::Mul(other_part, other_reg, not_cmp));
+                                self.ops.push(LIROp::Add(dst, dst, other_part));
+                            }
+                        }
                     }
                 }
             }
@@ -1121,8 +1237,7 @@ impl<'tcx> MirToLir<'tcx> {
                 let elem_ty = self.mono_ty(operand.ty(&body.local_decls, self.tcx));
                 let elem_sz = self.type_size(elem_ty).max(1);
                 let total = n * elem_sz;
-                let agg_id = self.agg_counter;
-                self.agg_counter += 1;
+                let agg_id = next_agg_id();
                 let sym = format!("__repeat_{agg_id}");
                 self.statics.push(StaticData {
                     name: sym.clone(),
@@ -1300,8 +1415,7 @@ impl<'tcx> MirToLir<'tcx> {
                         }
                     }
 
-                    let fp_sym = format!("__fat_ptr_{}", self.agg_counter);
-                    self.agg_counter += 1;
+                    let fp_sym = format!("__fat_ptr_{}", next_agg_id());
                     self.statics.push(StaticData {
                         name: fp_sym.clone(),
                         bytes: vec![0u8; 16],
@@ -1364,8 +1478,7 @@ impl<'tcx> MirToLir<'tcx> {
                 // Not memory-backed yet — spill to BSS.
                 let ty = self.mono_ty(place.ty(&body.local_decls, self.tcx).ty);
                 let size = self.type_size(ty) as usize;
-                let sym = format!("__carg_{}", self.agg_counter);
-                self.agg_counter += 1;
+                let sym = format!("__carg_{}", next_agg_id());
                 self.statics.push(StaticData {
                     name: sym.clone(),
                     bytes: vec![0u8; size],
@@ -1439,6 +1552,90 @@ impl<'tcx> MirToLir<'tcx> {
                     self.ops.push(LIROp::LoadImm(dst, bits as u64));
                     return Ok(dst);
                 }
+                // Associated / cross-crate constants arrive unevaluated
+                // (e.g. <u8 as SizedTypeProperties>::LAYOUT, a 16-byte Layout).
+                // Evaluate, then handle the resulting value like a Val const.
+                if let mir::Const::Unevaluated(uv, ty) = c.const_ {
+                    if let Ok(val) = self.tcx.const_eval_resolve(typing_env, uv, DUMMY_SP) {
+                        match &val {
+                            ConstValue::Indirect { alloc_id, offset } => {
+                                if let Some(sym) = self.intern_alloc(*alloc_id, ty) {
+                                    self.ops.push(LIROp::LoadAddr { dst, symbol: sym });
+                                    if offset.bytes() != 0 {
+                                        let off = self.alloc_reg();
+                                        self.ops.push(LIROp::LoadImm(off, offset.bytes()));
+                                        self.ops.push(LIROp::Add(dst, dst, off));
+                                    }
+                                    return Ok(dst);
+                                }
+                            }
+                            ConstValue::Slice { alloc_id, meta } => {
+                                let alloc = self.tcx.global_alloc(*alloc_id);
+                                if let GlobalAlloc::Memory(alloc) = alloc {
+                                    let inner = alloc.inner();
+                                    let bytes = inner
+                                        .inspect_with_uninit_and_ptr_outside_interpreter(
+                                            0..inner.len(),
+                                        )
+                                        .to_vec();
+                                    let len = *meta;
+                                    let data_sym = format!("__str_const_{}", next_agg_id());
+                                    self.statics.push(StaticData {
+                                        name: data_sym.clone(),
+                                        bytes,
+                                        writable: false,
+                                    });
+                                    let fp_sym = format!("__fat_ptr_{}", next_agg_id());
+                                    self.statics.push(StaticData {
+                                        name: fp_sym.clone(),
+                                        bytes: vec![0u8; 16],
+                                        writable: true,
+                                    });
+                                    let fp_addr = self.alloc_reg();
+                                    self.ops.push(LIROp::LoadAddr {
+                                        dst: fp_addr,
+                                        symbol: fp_sym,
+                                    });
+                                    let r_data = self.alloc_reg();
+                                    self.ops.push(LIROp::LoadAddr {
+                                        dst: r_data,
+                                        symbol: data_sym,
+                                    });
+                                    self.ops.push(LIROp::Store {
+                                        src: r_data,
+                                        base: fp_addr,
+                                        offset: 0,
+                                    });
+                                    let r_len = self.alloc_reg();
+                                    self.ops.push(LIROp::LoadImm(r_len, len));
+                                    self.ops.push(LIROp::Store {
+                                        src: r_len,
+                                        base: fp_addr,
+                                        offset: 8,
+                                    });
+                                    if dst != fp_addr {
+                                        self.ops.push(LIROp::Move(dst, fp_addr));
+                                    }
+                                    return Ok(dst);
+                                }
+                            }
+                            ConstValue::Scalar(Scalar::Ptr(ptr, _)) => {
+                                if let GlobalAlloc::Static(def_id) =
+                                    self.tcx.global_alloc(ptr.provenance.alloc_id())
+                                {
+                                    let sym = self
+                                        .tcx
+                                        .symbol_name(ty::Instance::mono(self.tcx, def_id))
+                                        .name
+                                        .to_string();
+                                    self.ops.push(LIROp::LoadAddr { dst, symbol: sym });
+                                    return Ok(dst);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 if let mir::Const::Val(ConstValue::Scalar(Scalar::Ptr(ptr, _)), _) = c.const_ {
                     if let GlobalAlloc::Static(def_id) =
                         self.tcx.global_alloc(ptr.provenance.alloc_id())
@@ -1485,16 +1682,14 @@ impl<'tcx> MirToLir<'tcx> {
                 };
                 if let Some((bytes, len)) = slice_bytes {
                     // Intern the bytes as a read-only static.
-                    let data_sym = format!("__str_const_{}", self.agg_counter);
-                    self.agg_counter += 1;
+                    let data_sym = format!("__str_const_{}", next_agg_id());
                     self.statics.push(StaticData {
                         name: data_sym.clone(),
                         bytes,
                         writable: false,
                     });
                     // Build the {ptr, len} pair in BSS, return its address.
-                    let fp_sym = format!("__fat_ptr_{}", self.agg_counter);
-                    self.agg_counter += 1;
+                    let fp_sym = format!("__fat_ptr_{}", next_agg_id());
                     self.statics.push(StaticData {
                         name: fp_sym.clone(),
                         bytes: vec![0u8; 16],
@@ -1762,6 +1957,26 @@ impl<'tcx> MirToLir<'tcx> {
     ) -> Result<(), String> {
         match &term.kind {
             mir::TerminatorKind::Return => {
+                // AAPCS: aggregates of exactly 16 bytes (and fat pointers)
+                // return in x0:x1 — load both words from the memory-backed
+                // return place. (>16 bytes went through sret in x8; <=8 is
+                // already in x0.)
+                let ret_ty = self.mono_ty(body.return_ty());
+                if self.type_size(ret_ty) == 16
+                    && self.mem_locals.contains(&mir::Local::from_usize(0))
+                {
+                    let p = self.local_reg(mir::Local::from_usize(0));
+                    self.ops.push(LIROp::Load {
+                        dst: Reg(0),
+                        base: p,
+                        offset: 0,
+                    });
+                    self.ops.push(LIROp::Load {
+                        dst: Reg(1),
+                        base: p,
+                        offset: 8,
+                    });
+                }
                 self.ops.push(LIROp::Return);
             }
 
@@ -2117,8 +2332,7 @@ impl<'tcx> MirToLir<'tcx> {
                 let ret_ty = self.mono_ty(destination.ty(&body.local_decls, self.tcx).ty);
                 let sret = self.type_size(ret_ty) > 16;
                 let sret_sym = if sret {
-                    let sym = format!("__cagg_{}", self.agg_counter);
-                    self.agg_counter += 1;
+                    let sym = format!("__cagg_{}", next_agg_id());
                     self.statics.push(StaticData {
                         name: sym.clone(),
                         bytes: vec![0u8; self.type_size(ret_ty) as usize],
@@ -2132,7 +2346,7 @@ impl<'tcx> MirToLir<'tcx> {
                 // Emit the call.
                 if let Some(ref sym) = sret_sym {
                     self.ops.push(LIROp::LoadAddr {
-                        dst: Reg(8),
+                        dst: crate::lir::X8,
                         symbol: sym.clone(),
                     });
                 }
@@ -2201,10 +2415,44 @@ impl<'tcx> MirToLir<'tcx> {
                     }
                 }
 
-                // Capture the return value. sret: the callee wrote the
-                // backing buffer passed in x8 — bind the destination local
-                // to it (no register capture). Otherwise x0 → destination.
-                if let Some(ref sym) = sret_sym {
+                // Capture the return value.
+                // - sret (>16 bytes): the callee wrote the backing buffer
+                //   passed in x8 — bind the destination local to it.
+                // - exactly 16 bytes (incl. fat pointers): the callee
+                //   returned x0:x1 but our locals can only hold one word —
+                //   store both words into a fresh backing buffer and bind
+                //   the destination local to it.
+                // - otherwise x0 → destination.
+                let ret_words = (self.type_size(ret_ty) / 8).min(2) as usize;
+                if sret_sym.is_some() || ret_words == 2 {
+                    let sym = sret_sym.clone().unwrap_or_else(|| {
+                        let sym = format!("__cagg_{}", next_agg_id());
+                        self.statics.push(StaticData {
+                            name: sym.clone(),
+                            bytes: vec![0u8; self.type_size(ret_ty) as usize],
+                            writable: true,
+                        });
+                        sym
+                    });
+                    // 16-byte (non-sret) results arrive in registers — store
+                    // them into the backing buffer first.
+                    if sret_sym.is_none() {
+                        let ptr = self.alloc_reg();
+                        self.ops.push(LIROp::LoadAddr {
+                            dst: ptr,
+                            symbol: sym.clone(),
+                        });
+                        self.ops.push(LIROp::Store {
+                            src: Reg(0),
+                            base: ptr,
+                            offset: 0,
+                        });
+                        self.ops.push(LIROp::Store {
+                            src: Reg(1),
+                            base: ptr,
+                            offset: 8,
+                        });
+                    }
                     if destination.projection.is_empty() {
                         let ptr = self.alloc_reg();
                         self.ops.push(LIROp::LoadAddr {
@@ -2216,7 +2464,7 @@ impl<'tcx> MirToLir<'tcx> {
                         self.mem_ptr_def_bb.insert(destination.local, u32::MAX);
                     } else {
                         // Projected destination: copy the returned bytes
-                        // from the sret buffer field-by-field.
+                        // from the backing buffer field-by-field.
                         let ptr = self.alloc_reg();
                         self.ops.push(LIROp::LoadAddr {
                             dst: ptr,

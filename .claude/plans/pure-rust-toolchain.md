@@ -344,6 +344,23 @@ node code (thread_info map) — pointer corruption, next task.
 
 Verified 2026-10-16: workspace 173 green; 11/11 integration; p2 exits 42
 under ASLR.
+**Update 2026-10-16 (session 5) — enum layouts + real sret.**
+
+- Discriminant reads follow the enum's layout (Direct tag field vs Niche
+  decoding) — niche enums like Result<NonNull, _> were read as a 4-byte tag
+  at offset 0 (the payload pointer).
+- Const::Unevaluated operands evaluated (associated consts); multi-word
+  composite Assign to memory copies all slots.
+- Internal static names are per-crate unique (per-function counters collided
+  within one object, linker aliased the memory).
+- sret actually reaches x8: backend Reg numbering skips x8, so an X8 sentinel
+  (Reg(u32::MAX)) maps to physical x8; count_spills fixed to not count the
+  sentinel as a spill slot.
+
+Verified: workspace 173 green, 11/11 integration, p2 exit 42 under ASLR.
+Next faults: t4 (String::with_capacity) hangs in a Once init retry loop;
+println! still panics "RefCell already borrowed" at StdoutLock::write.
+
 Next fault: println! panics "RefCell already borrowed" at
 stdout.rs:860 (StdoutLock::write) — the RefCell borrow flag is already set
 on the first write; candidates: TLS LOCAL_STDOUT overlap or
